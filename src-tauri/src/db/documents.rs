@@ -41,6 +41,10 @@ pub struct Document {
     /// 非 null 时,引用弹窗「📎 引用文件」按本字段降序优先显示;
     /// 用于让用户对常用文档(如本案合同 / 起诉状)做置顶,避免每次翻找。
     pub pinned_at: Option<String>,
+    /// 2026-06-13 加(migration 0026):文档级 OCR 后端覆盖。
+    /// 'ppocrv6' = 用户对带水印的工商调档件点了「去水印重新识别」→ 强制 PP-OCRv6 + 去水印(不回退);
+    /// NULL = 常规 OCR 策略。普通「重新识别」会清回 NULL。
+    pub ocr_backend_override: Option<String>,
 }
 
 fn make_cache_key(modified_at: Option<&str>, size_bytes: u64) -> String {
@@ -242,6 +246,21 @@ pub async fn reset_for_reextract(pool: &SqlitePool, id: &str) -> Result<u64, sql
     .bind(id)
     .execute(pool)
     .await?;
+    Ok(res.rows_affected())
+}
+
+/// 2026-06-13 · 设置/清除文档级 OCR 后端覆盖(去水印重识别)。
+/// `backend = Some("ppocrv6")` 强制去水印后端;`None` 清回常规策略(普通「重新识别」用)。
+pub async fn set_ocr_backend_override(
+    pool: &SqlitePool,
+    id: &str,
+    backend: Option<&str>,
+) -> Result<u64, sqlx::Error> {
+    let res = sqlx::query("UPDATE documents SET ocr_backend_override = ? WHERE id = ?")
+        .bind(backend)
+        .bind(id)
+        .execute(pool)
+        .await?;
     Ok(res.rows_affected())
 }
 

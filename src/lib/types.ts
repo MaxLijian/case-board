@@ -141,6 +141,19 @@ export interface Case {
    * 全部审级明细走 listCaseInstances()。
    */
   agg_court_type: string | null;
+
+  /**
+   * 2026-06-13(migration 0023):我方代理立场('原告方'/'被告方'/'第三人'/'反诉混合'/null)。
+   * LLM 从 is_our_side=true 当事人推断;用户改值走 user_overrides_json(fields.agg_our_side)。
+   * 驱动报告侧重、AI 助手立场、各 chip 不再"猜我方"。
+   */
+  agg_our_side: string | null;
+
+  /**
+   * 2026-06-13(migration 0025):工作流状态锁。1=用户手动选过状态,
+   * 全局抽不再用 LLM 值覆盖(修「结案/手设状态被重新分析刷新掉」)。
+   */
+  workflow_status_locked: number;
 }
 
 /**
@@ -227,6 +240,11 @@ export interface Document {
    * `null` = 未置顶;有值时是 ISO 时间戳,越新越靠前。AttachmentPicker 据此分组。
    */
   pinned_at: string | null;
+  /**
+   * 2026-06-13(migration 0026)· 文档级 OCR 后端覆盖。
+   * 'ppocrv6' = 用户点了「去水印重新识别」→ 强制 PP-OCRv6+去水印;null = 常规 OCR 策略。
+   */
+  ocr_backend_override: string | null;
 }
 
 /** 对应 Rust 端 `ImportResult`,import_case_folder 命令的返回 */

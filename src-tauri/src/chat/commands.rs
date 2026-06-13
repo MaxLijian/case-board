@@ -753,7 +753,7 @@ fn sanitize_error(s: &str) -> String {
 
 /// 解析 `tool_choice`。
 ///
-/// **实测 2026-05-30**:DeepSeek V4 **全系**(`flash` / `pro` / `pro-thinking`)都是思考模式,
+/// **实测 2026-05-30**:DeepSeek V4 **全系**(`flash` / `pro`)都是思考模式,
 /// 都**不支持** `tool_choice="required"`,会返回 400 `"Thinking mode does not support this tool_choice"`
 /// (flash + required 实测同样 400)。旧逻辑按模型名判 thinking(只降级含 "pro"/"thinking" 的)是错的
 /// —— flash 名字不含这俩却也拒 required,只是因"工具任务恰好都路由到 pro"才没在默认配置下爆。

@@ -30,6 +30,7 @@ const SUBDIRS: &[&str] = &[
     "raw/notes",
     "raw/companies",
     "raw/yuandian-cache",
+    "raw/cases-experience",
     "wiki",
     "wiki/sources",
     "wiki/topics",
@@ -41,6 +42,7 @@ const WELCOME_MD: &str = "# 法律知识库\n\n\
 - `raw/notes/` — 你手动整理的原始笔记\n\
 - `raw/companies/` — 企业档案\n\
 - `raw/yuandian-cache/` — **CaseBoard / Claude Code 自动写入的元典缓存**(不建议手动改)\n\
+- `raw/cases-experience/` — **CaseBoard 结案案件沉淀的办案经验卡片**(可被 search_local_kb 检索复用)\n\
 - `wiki/sources/` — 你整理过的来源页(由 Claude Code + legal-kb skill 治理)\n\
 - `wiki/topics/` — 专题页\n\n\
 ## 长期使用建议\n\

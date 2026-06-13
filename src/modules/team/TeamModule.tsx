@@ -48,7 +48,6 @@ import type {
 } from "@/lib/types";
 import {
   STATUS_DEFS,
-  STATUS_LIST,
   type StatusId,
 } from "@/modules/litigation/lib/inferStatus";
 import { confirmDialog } from "@/lib/dialog";
@@ -1053,7 +1052,7 @@ function CaseCard({
   );
 }
 
-/** 编辑面板:改状态(8 档下拉)/ 留备注。提交即生成接力转交的编辑请求。 */
+/** 编辑面板:留备注(团队是只读镜像,不改本地状态——状态在各自本地诉讼看板改)。 */
 function CaseEditPanel({
   c,
   owner,
@@ -1066,7 +1065,6 @@ function CaseEditPanel({
   showNote?: boolean;
 }) {
   const [busy, setBusy] = useState(false);
-  const [statusSel, setStatusSel] = useState<string>("");
   const [note, setNote] = useState("");
 
   async function submit(field: string, value: string, label: string) {
@@ -1076,7 +1074,6 @@ function CaseEditPanel({
       await teamSubmitEdit(owner.member_id, c.id, c.name, field, value.trim());
       toast(`${label}已提交,待「${owner.name}」的 App 同步后生效`, "success");
       setNote("");
-      setStatusSel("");
       onChanged();
     } catch (e) {
       toast(`提交失败:${e}`, "error");
@@ -1087,28 +1084,6 @@ function CaseEditPanel({
 
   return (
     <div className="mt-2 space-y-2 rounded-md bg-secondary/40 p-2">
-      <div className="flex items-center gap-2">
-        <select
-          value={statusSel}
-          onChange={(e) => setStatusSel(e.target.value)}
-          className="rounded-md border border-border bg-background px-2 py-1 text-xs text-foreground"
-        >
-          <option value="">改状态为…</option>
-          {STATUS_LIST.map((st) => (
-            <option key={st.id} value={st.id}>
-              {st.label}
-            </option>
-          ))}
-        </select>
-        <button
-          type="button"
-          disabled={busy || !statusSel}
-          onClick={() => void submit("workflow_status", statusSel, "状态修改")}
-          className="rounded-md bg-sky-600 px-2.5 py-1 text-xs font-medium text-white hover:bg-sky-700 disabled:opacity-50"
-        >
-          更新状态
-        </button>
-      </div>
       {showNote && (
         <div className="flex items-center gap-2">
           <input

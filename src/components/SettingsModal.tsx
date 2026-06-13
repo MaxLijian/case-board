@@ -645,8 +645,8 @@ export function SettingsModal({
                 title="元典法律开放平台"
                 desc="查询法律法规、裁判案例、企业信息的数据源"
                 link={{
-                  label: "申请 API key",
-                  href: "https://open.chineselaw.com/",
+                  label: "注册后在「个人中心」申请 API key",
+                  href: "https://open.chineselaw.com/profile",
                 }}
               >
                 <Field label="API Key">

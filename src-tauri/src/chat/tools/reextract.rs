@@ -69,7 +69,7 @@ impl Tool for ReextractDocument {
         }
 
         let doc_id = doc.id.clone();
-        let filename = crate::ingest::pipeline::trigger_reextract(app, ctx.pool, &doc_id)
+        let filename = crate::ingest::pipeline::trigger_reextract(app, ctx.pool, &doc_id, None)
             .await
             .map_err(ToolError::Runtime)?;
 

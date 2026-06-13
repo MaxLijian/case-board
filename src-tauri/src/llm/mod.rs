@@ -265,7 +265,7 @@ impl LlmConfig {
             } else {
                 format!("{}/v1/chat/completions", endpoint)
             };
-            // cloud_llm_model 现在是「档位」:flash / pro / pro-thinking / 'auto'。
+            // cloud_llm_model 现在是「档位」:flash / pro / 'auto'。
             // 'auto'(自动挡)不是合法 API 模型名 → 基础 config 落 flash(具体每次调用的模型
             // 由 model_router::route_model 决定并覆盖 LlmConfig.model,见 chat/commands.rs)。
             let base_model = match settings.cloud_llm_model.as_deref().map(str::trim) {

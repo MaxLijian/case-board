@@ -45,6 +45,60 @@ pub enum SubjectKind {
     Enterprise,
 }
 
+/// 执行模块立场(2026-06-13 Phase 2):决定查谁、报告往哪个方向写。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ExecStance {
+    /// 我方=申请执行人/债权人:查**对方(被执行人)**财产、找拒执线索(默认 / 原有行为)。
+    Creditor,
+    /// 我方=被执行人/债务人:查**我方客户**做暴露面自查,报告转防御
+    /// (查封状态 / 财产豁免 / 执行异议复议 / 和解;拒执线索反向成合规提醒)。
+    Debtor,
+}
+
+impl ExecStance {
+    /// 从我方代理立场推:`被告方` → 债务人模式;其余(原告方/第三人/未知)→ 债权人模式(安全默认)。
+    pub fn from_our_side(our_side: Option<&str>) -> Self {
+        match our_side.map(str::trim) {
+            Some("被告方") => ExecStance::Debtor,
+            _ => ExecStance::Creditor,
+        }
+    }
+
+    /// 给执行类报告的 system prompt 包一层立场。债权人=原样(原有行为);债务人=前置防御立场总纲。
+    pub fn wrap_system(&self, base: &str) -> String {
+        match self {
+            ExecStance::Creditor => base.to_string(),
+            ExecStance::Debtor => format!("{}\n\n{}", DEBTOR_EXEC_PREAMBLE, base),
+        }
+    }
+}
+
+/// 债务人(被执行人)立场总纲 —— 前置到三份执行报告的 system prompt,把"帮债权人执行"反转成"为我方客户防御"。
+const DEBTOR_EXEC_PREAMBLE: &str = r###"⚠️【立场:我方代理「被执行人」(债务人)—— 本报告服务防御,不是帮债权人执行】
+本案我方代理的是被执行人 / 债务人。下文数据里出现的"被执行人"= **我方客户本人**。请整体反转视角输出:
+1. **不要**写成"挖被执行人财产线索供执行";改为为我方客户做**风险敞口自查**:哪些财产已被 / 可能被查封冻结、当前查封冻结状态与期限、价值评估、被执行的紧迫度。
+2. **财产豁免**:盘点可依法主张不得执行 / 豁免的部分(生活必需品、必要生活费用、唯一住房居住权、社保 / 养老金、被扶养人应得份额等),给主张路径。
+3. **执行异议 / 复议线索**:超标的查封、案外人财产被牵连、执行程序瑕疵(送达 / 评估 / 拍卖)、主体不适格、债务已部分清偿未扣减、保证期间 / 时效抗辩等,给可提的异议方向与依据。
+4. 原"拒执风险线索"**反向为合规提醒**:明确告知我方客户在执行期间哪些处分财产的动作(转移 / 低价转让 / 抽逃 / 虚假诉讼)可能被认定拒执或被撤销,提示**规避守法**,**绝不教唆隐匿 / 逃避执行**。
+5. **和解谈判**:基于双方实力与我方可承受能力,给和解空间与策略建议。
+风险等级一律按"对**我方客户**的不利程度 / 紧迫度"判断,而非"对债权人执行的价值"。
+以下为原通用指令(其中"被执行人 / 对方"按本立场理解为我方客户;凡"为申请执行人 / 债权人服务"的措辞按防御立场反向执行):"###;
+
+/// 读案件的执行立场(用户在详情页确认的优先,否则用 LLM 抽的 agg_our_side)。
+/// 查库失败/没数据时退回 Creditor(原有行为,不破坏既有债权人案件)。
+pub async fn exec_stance_for_case(pool: &SqlitePool, case_id: &str) -> ExecStance {
+    let row: Option<(Option<String>, Option<String>)> =
+        sqlx::query_as("SELECT agg_our_side, user_overrides_json FROM cases WHERE id = ?")
+            .bind(case_id)
+            .fetch_optional(pool)
+            .await
+            .ok()
+            .flatten();
+    let our_side =
+        row.and_then(|(a, u)| crate::db::cases::effective_our_side(a.as_deref(), u.as_deref()));
+    ExecStance::from_our_side(our_side.as_deref())
+}
+
 /// 编排结果汇报(给前端 Toast + 给 LLM 评估用)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OrchestratorReport {
@@ -81,9 +135,18 @@ pub async fn basic_query(
         None => (None, None),
     };
 
-    let subjects = extract_target_subjects(party_json.as_deref());
+    // Phase 2:按执行立场选查询对象。债权人模式查对方(被执行人);债务人模式查我方客户(做暴露面自查)。
+    let stance = exec_stance_for_case(pool, case_id).await;
+    let subjects = extract_target_subjects(party_json.as_deref(), stance);
     if subjects.is_empty() {
-        return Err("没找到被执行人(可能 LLM 还没抽 party_contacts,先生成案件报告)".into());
+        let who = match stance {
+            ExecStance::Creditor => "被执行人",
+            ExecStance::Debtor => "我方当事人(被执行人)",
+        };
+        return Err(format!(
+            "没找到{}(可能 LLM 还没抽 party_contacts,先生成案件报告)",
+            who
+        ));
     }
 
     // 2. 准备输出目录
@@ -137,8 +200,10 @@ pub async fn basic_query(
     })
 }
 
-/// 从 agg_party_contacts JSON 抽出"被执行人"列表
-fn extract_target_subjects(json: Option<&str>) -> Vec<Subject> {
+/// 从 agg_party_contacts JSON 抽出要查询的主体列表。
+/// - 债权人模式:对方(被告/被执行/被申请,或 is_our_side==false)。
+/// - 债务人模式:我方客户(is_our_side==true,排除代理人/法务;is_our_side 缺失时退回按被执行类角色)。
+fn extract_target_subjects(json: Option<&str>, stance: ExecStance) -> Vec<Subject> {
     let Some(j) = json else { return vec![] };
     let Ok(parsed) = serde_json::from_str::<serde_json::Value>(j) else {
         return vec![];
@@ -161,13 +226,27 @@ fn extract_target_subjects(json: Option<&str>) -> Vec<Subject> {
         }
         let role = item.get("role").and_then(|v| v.as_str()).unwrap_or("");
         let is_our_side = item.get("is_our_side").and_then(|v| v.as_bool());
-
-        // 只保留对方(被告 / 被执行 / 被申请),或者 is_our_side == false
-        let is_target = is_our_side == Some(false)
-            || role.contains("被告")
+        let role_is_executee = role.contains("被告")
             || role.contains("被执行")
             || role.contains("被申请")
             || role.contains("被告人");
+
+        let is_target = match stance {
+            // 债权人:查对方(被执行人)。is_our_side==false,或按被执行类角色兜底;
+            // 但**绝不查我方**(is_our_side==true 时即便角色像被执行人也排除,防数据矛盾误查自己客户)。
+            ExecStance::Creditor => {
+                is_our_side == Some(false) || (is_our_side != Some(true) && role_is_executee)
+            }
+            // 债务人:查我方客户本人做暴露面自查。is_our_side==true(排除代理人/法务);
+            // is_our_side 缺失时退回"被执行类角色"(债务人案件里这正是我方客户)。
+            ExecStance::Debtor => {
+                if role.contains("代理") {
+                    false
+                } else {
+                    is_our_side == Some(true) || (is_our_side.is_none() && role_is_executee)
+                }
+            }
+        };
         if !is_target {
             continue;
         }

@@ -920,6 +920,16 @@ async fn parse_stream(
         }
     }
 
+    // 思考模型单轮可能纯推理几分钟,落日志方便诊断「是否真卡死」(连不上会先报 Network 错)。
+    if !reasoning.is_empty() {
+        crate::dlog!(
+            "[agent_loop] 本轮 reasoning_content {} 字,content {} 字,tool_calls {}",
+            reasoning.chars().count(),
+            content.chars().count(),
+            tool_calls_map.len()
+        );
+    }
+
     // 收尾 tool_calls map → Vec(按 index 升序)
     let mut indexed: Vec<(u32, StreamingToolCall)> = tool_calls_map.into_iter().collect();
     indexed.sort_by_key(|(i, _)| *i);
@@ -1006,10 +1016,12 @@ fn handle_sse_event(
                 }
             }
             // thinking 模型思维链:累积起来,本轮做工具调用时必须随 assistant 消息回传
-            // (DeepSeek 思考模式工具调用强约束);不进 content、暂不发前端专用 event。
+            // (DeepSeek 思考模式工具调用强约束)。不进 content;但发 Reasoning 事件给前端做
+            // 「深度推理中…(N 字)」进度反馈 —— 否则大上下文单轮推理几分钟里 UI 零反馈像卡死。
             if let Some(rc) = choice.delta.reasoning_content {
                 if !rc.is_empty() {
                     reasoning_acc.push_str(&rc);
+                    let _ = tx.send(ChatStreamEvent::Reasoning { text: rc });
                 }
             }
         }

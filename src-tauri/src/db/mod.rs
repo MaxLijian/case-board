@@ -26,6 +26,7 @@ pub mod documents;
 pub mod metrics;
 pub mod payments;
 pub mod seed;
+pub mod todos;
 
 /// `directories` 用的标识——macOS 上这会拼成 `~/Library/Application Support/CaseBoard/`
 const APP_QUALIFIER: &str = "";

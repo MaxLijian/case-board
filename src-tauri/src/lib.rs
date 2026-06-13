@@ -252,6 +252,7 @@ async fn import_case_folder(
         pool.inner().clone(),
         case.id.clone(),
         docs_for_extraction,
+        true, // 导入新案件:全部文档抽完后跑一次全案分析
     );
 
     Ok(ImportResult {
@@ -371,7 +372,13 @@ async fn commit_import_folder(
         let docs = documents_db::list_documents_by_case(pool.inner(), &r.case.id)
             .await
             .map_err(db_err)?;
-        pipeline::spawn_extraction(app.clone(), pool.inner().clone(), r.case.id.clone(), docs);
+        pipeline::spawn_extraction(
+            app.clone(),
+            pool.inner().clone(),
+            r.case.id.clone(),
+            docs,
+            true,
+        );
     }
     Ok(results)
 }
@@ -581,6 +588,52 @@ async fn delete_payment(pool: tauri::State<'_, SqlitePool>, id: String) -> Resul
 }
 
 /* ============================================================
+ * 2026-06-13 · 案件待办清单 (case_todos) commands(胡彬律师反馈)
+ * ============================================================ */
+
+#[tauri::command]
+async fn add_todo(
+    pool: tauri::State<'_, SqlitePool>,
+    new: db::todos::NewTodo,
+) -> Result<db::todos::Todo, String> {
+    db::todos::add(pool.inner(), new).await.map_err(db_err)
+}
+
+#[tauri::command]
+async fn list_todos(
+    pool: tauri::State<'_, SqlitePool>,
+    case_id: String,
+) -> Result<Vec<db::todos::Todo>, String> {
+    db::todos::list_by_case(pool.inner(), &case_id)
+        .await
+        .map_err(db_err)
+}
+
+/// 跨案件未完成待办(首页"待办汇总"用)。
+#[tauri::command]
+async fn list_open_todos(
+    pool: tauri::State<'_, SqlitePool>,
+) -> Result<Vec<db::todos::OpenTodoRow>, String> {
+    db::todos::list_open(pool.inner()).await.map_err(db_err)
+}
+
+#[tauri::command]
+async fn update_todo(
+    pool: tauri::State<'_, SqlitePool>,
+    id: String,
+    upd: db::todos::UpdateTodo,
+) -> Result<u64, String> {
+    db::todos::update(pool.inner(), &id, &upd)
+        .await
+        .map_err(db_err)
+}
+
+#[tauri::command]
+async fn delete_todo(pool: tauri::State<'_, SqlitePool>, id: String) -> Result<u64, String> {
+    db::todos::delete(pool.inner(), &id).await.map_err(db_err)
+}
+
+/* ============================================================
  * 2026-06-11 · 审级实例 (case_instances) commands
  * ============================================================ */
 
@@ -647,7 +700,21 @@ async fn reextract_document(
     doc_id: String,
 ) -> Result<(), String> {
     // 复用共享入口(与 chat 工具 reextract_document 同一逻辑,防漂移)。
-    pipeline::trigger_reextract(app, pool.inner(), &doc_id)
+    // None = 普通重识别,顺带清除该文档之前可能设过的去水印覆盖。
+    pipeline::trigger_reextract(app, pool.inner(), &doc_id, None)
+        .await
+        .map(|_| ())
+}
+
+/// 2026-06-13(胡彬律师反馈)· 去水印重新识别:对带大幅水印的工商调档件,
+/// 强制走 PP-OCRv6(纯文字)+ 去水印过滤(不回退 VL)。同样不自动跑全案分析(省钱)。
+#[tauri::command]
+async fn reextract_document_dewatermark(
+    app: tauri::AppHandle,
+    pool: tauri::State<'_, SqlitePool>,
+    doc_id: String,
+) -> Result<(), String> {
+    pipeline::trigger_reextract(app, pool.inner(), &doc_id, Some("ppocrv6"))
         .await
         .map(|_| ())
 }
@@ -897,6 +964,64 @@ async fn global_extract_case(
     Ok(ingest::global_pipeline::run_global_extract(pool.inner(), &case_id, &llm_config).await)
 }
 
+/// 项目1:把(通常已结案/判决的)案件提炼成「办案经验卡片」写入本地知识库。
+/// 用户在案件详情页点「沉淀为办案经验」触发;返回写入文件的绝对路径。
+/// 经验卡片落 `<kb>/raw/cases-experience/`,search_local_kb 整库可检索复用(不脱敏,本机自用)。
+#[tauri::command]
+async fn distill_case_experience(
+    pool: tauri::State<'_, SqlitePool>,
+    case_id: String,
+) -> Result<String, String> {
+    let settings = settings::read_settings().unwrap_or_default();
+    if settings.local_kb_root.is_none() || settings.local_kb_enabled != Some(true) {
+        return Err("尚未配置或启用本地知识库,请先在设置里设定知识库目录".into());
+    }
+    let case = db::cases::get_case(pool.inner(), &case_id)
+        .await
+        .map_err(|e| e.to_string())?
+        .ok_or("案件不存在")?;
+    let report_path = case
+        .case_report_path
+        .clone()
+        .ok_or("该案件还没有分析报告,请先生成「案件报告 / 重新分析」后再沉淀")?;
+    let report_md =
+        std::fs::read_to_string(&report_path).map_err(|e| format!("读案件报告失败: {e}"))?;
+    let brief = case_brief_for_experience(&case);
+    let llm_config = llm::LlmConfig::from_settings(&settings);
+    let card = llm::global_extract::distill_experience(&llm_config, &brief, &report_md)
+        .await
+        .map_err(|e| format!("提炼经验卡片失败: {e}"))?;
+    let full = format!(
+        "{card}\n\n---\n> 来源案件:{} · CaseBoard 自动沉淀\n",
+        case.name
+    );
+    let path = local_kb::experience::save_case_experience(&settings, &case_id, &case.name, &full)
+        .map_err(|e| e.to_string())?;
+    Ok(path.to_string_lossy().to_string())
+}
+
+/// 拼一段案件结构化摘要,补充分析报告未必涵盖的字段,喂给经验提炼 LLM。
+fn case_brief_for_experience(case: &db::cases::Case) -> String {
+    let mut s = String::new();
+    s.push_str(&format!("案件名称:{}\n", case.name));
+    if let Some(v) = &case.agg_case_no {
+        s.push_str(&format!("案号:{v}\n"));
+    }
+    if let Some(v) = &case.agg_court {
+        s.push_str(&format!("法院:{v}\n"));
+    }
+    if let Some(v) = &case.agg_cause {
+        s.push_str(&format!("案由:{v}\n"));
+    }
+    if let Some(v) = &case.agg_our_side {
+        s.push_str(&format!("我方立场:{v}\n"));
+    }
+    if let Some(v) = &case.agg_resolution {
+        s.push_str(&format!("处理结果:{v}\n"));
+    }
+    s
+}
+
 /// 2026-05-24 e:收集反馈用的诊断信息(给前端弹窗预填用)。
 ///
 /// 收集内容:版本 / OS / provider / 案件数 / 文档统计 / 最近失败 / 匿名 client_id /
@@ -1047,6 +1172,7 @@ async fn recompute_case_extraction(
         pool.inner().clone(),
         case_id.clone(),
         documents,
+        true,
     );
 
     Ok(reset_count)
@@ -1117,6 +1243,7 @@ async fn refresh_case_files(
             pool.inner().clone(),
             case_id.clone(),
             documents,
+            true,
         );
     }
 
@@ -1405,6 +1532,7 @@ async fn ingest_court_sms(
         pool.inner().clone(),
         case_id.clone(),
         documents,
+        true,
     );
     Ok(CourtSmsIngestResult {
         downloaded,
@@ -2245,17 +2373,24 @@ pub fn run() {
             db_health,
             reaggregate_all_cases,
             global_extract_case,
+            distill_case_experience,
             yuandian_basic_query,
             yuandian_deep_dive,
             add_payment,
             list_payments,
             delete_payment,
+            add_todo,
+            list_todos,
+            list_open_todos,
+            update_todo,
+            delete_todo,
             list_case_instances,
             add_case_instance,
             update_case_instance,
             delete_case_instance,
             delete_document,
             reextract_document,
+            reextract_document_dewatermark,
             export_report_html,
             export_report_docx,
             recompute_case_extraction,

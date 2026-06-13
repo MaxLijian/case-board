@@ -151,8 +151,12 @@ pub async fn run_global_extract(
         corpus.len() / 4
     );
 
+    // 2b. 读律师已确认的「我方代理立场」(详情页改的走 user_overrides_json.fields.agg_our_side)。
+    // 有则回喂当 LLM 输入,保证用户纠正立场后报告/画像按正确立场重写(advisor 命门②:立场双向)。
+    let confirmed_our_side = read_confirmed_our_side(pool, case_id).await;
+
     // 3. 单次 LLM call 同时拿表格 + 报告(2026-05-24 i 合并)
-    let combined = extract_combined(llm_config, &corpus).await;
+    let combined = extract_combined(llm_config, &corpus, confirmed_our_side.as_deref()).await;
 
     let (table_ok, report_ok, report_path_str, err) = match combined {
         Ok(r) => {
@@ -392,6 +396,32 @@ pub fn workflow_status_en_to_zh(en: &str) -> &str {
     }
 }
 
+/// 读律师在详情页确认/纠正过的「我方代理立场」(user_overrides_json.fields.agg_our_side)。
+/// 返回 None = 用户没改过 → 让 LLM 自行推断;Some = 以用户值为准回喂 LLM。
+async fn read_confirmed_our_side(pool: &SqlitePool, case_id: &str) -> Option<String> {
+    // 列可空 → query_scalar 的列类型是 Option<String>,fetch_optional 再裹一层 → 两次 flatten。
+    let json: String = sqlx::query_scalar::<_, Option<String>>(
+        "SELECT user_overrides_json FROM cases WHERE id = ?",
+    )
+    .bind(case_id)
+    .fetch_optional(pool)
+    .await
+    .ok()
+    .flatten()
+    .flatten()?;
+    let parsed: serde_json::Value = serde_json::from_str(&json).ok()?;
+    let v = parsed
+        .get("fields")
+        .and_then(|f| f.get("agg_our_side"))
+        .and_then(|x| x.as_str())?;
+    let v = v.trim();
+    if v.is_empty() {
+        None
+    } else {
+        Some(v.to_string())
+    }
+}
+
 /// 把 LLM 抽出来的 GlobalExtractTable 写到 cases 表里。
 async fn write_table_to_cases(
     pool: &SqlitePool,
@@ -414,6 +444,7 @@ async fn write_table_to_cases(
     let resolution_opt = t.resolution.as_deref().filter(|s| !s.trim().is_empty());
     let status_text_opt = t.status_text.as_deref().filter(|s| !s.trim().is_empty());
     let summary_opt = t.summary.as_deref().filter(|s| !s.trim().is_empty());
+    let our_side_opt = t.our_side.as_deref().filter(|s| !s.trim().is_empty());
 
     // D9-1:LLM 输出中文状态 → 前端/DB 统一英文 StatusId(单一口径);不在表内则 None(保留 DB 现值,
     // 用户可能手工标过)。修复"LLM 写中文、前端只认英文 → 推断状态在看板/执行 tab 落不了地"。
@@ -439,10 +470,12 @@ async fn write_table_to_cases(
             agg_fees = COALESCE(?, agg_fees), \
             agg_resolution = COALESCE(?, agg_resolution), \
             agg_status_text = COALESCE(?, agg_status_text), \
+            agg_our_side = COALESCE(?, agg_our_side), \
             case_summary = COALESCE(?, case_summary), \
             case_report_path = COALESCE(?, case_report_path), \
             case_report_generated_at = ?, \
-            workflow_status = COALESCE(?, workflow_status), \
+            workflow_status = CASE WHEN workflow_status_locked = 1 \
+                THEN workflow_status ELSE COALESCE(?, workflow_status) END, \
             agg_computed_at = ? \
          WHERE id = ?",
     )
@@ -461,6 +494,7 @@ async fn write_table_to_cases(
     .bind(&fees_json)
     .bind(resolution_opt)
     .bind(status_text_opt)
+    .bind(our_side_opt)
     .bind(summary_opt)
     .bind(report_path)
     .bind(if report_path.is_some() {

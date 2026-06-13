@@ -295,30 +295,11 @@ pub async fn apply_my_pending_edits(
         }
         match e.field.as_str() {
             "workflow_status" => {
-                let prev = sqlx::query_scalar::<_, Option<String>>(
-                    "SELECT workflow_status FROM cases WHERE id = ?",
-                )
-                .bind(&e.case_id)
-                .fetch_optional(pool)
-                .await
-                .map_err(|er| er.to_string())?;
-                match prev {
-                    Some(prev) => {
-                        sqlx::query("UPDATE cases SET workflow_status = ? WHERE id = ?")
-                            .bind(&e.value)
-                            .bind(&e.case_id)
-                            .execute(pool)
-                            .await
-                            .map_err(|er| er.to_string())?;
-                        e.prev_value = prev;
-                        e.status = "applied".into();
-                        e.applied_at = Some(now);
-                        applied += 1;
-                    }
-                    None => {
-                        e.status = "rejected".into(); // 案件已删/不存在
-                    }
-                }
+                // 2026-06-13 老板拍板:团队是只读镜像 + 备注,**不再支持改状态**。
+                // EDITABLE_FIELDS 已去掉 workflow_status(新请求在入口就被拒);历史遗留的
+                // workflow_status pending 一律 rejected,**绝不回写本地 cases** —— 本地 owner 的
+                // 状态(首页 update_workflow_status)才是唯一权威源,曾因团队改状态回写刷掉本地手设(bug C)。
+                e.status = "rejected".into();
                 write_edit(pool, &e).await?;
             }
             "note" => {
@@ -337,7 +318,7 @@ pub async fn apply_my_pending_edits(
     Ok(applied)
 }
 
-/// 所有人撤销一条已应用的编辑:状态改 reverted;workflow_status 类恢复原值。
+/// 所有人撤销一条已应用的编辑(现仅备注):状态改 reverted,不回写本地 cases(团队不碰状态)。
 pub async fn revert_edit(
     pool: &SqlitePool,
     identity: &TeamIdentity,
@@ -357,14 +338,7 @@ pub async fn revert_edit(
     if e.status != "applied" {
         return Err("这条改动不在已生效状态,无法撤销".into());
     }
-    if e.field == "workflow_status" {
-        sqlx::query("UPDATE cases SET workflow_status = ? WHERE id = ?")
-            .bind(&e.prev_value)
-            .bind(&e.case_id)
-            .execute(pool)
-            .await
-            .map_err(|er| er.to_string())?;
-    }
+    // 团队只读镜像 + 备注,不碰本地状态:撤销仅改 edit 自身状态(备注隐藏),不回写 cases。
     e.status = "reverted".into();
     write_edit(pool, &e).await
 }
@@ -427,11 +401,10 @@ fn snapshot_case_from(c: &Case) -> SnapshotCase {
         case_no: c.agg_case_no.clone().or_else(|| c.case_no.clone()),
         parties,
         case_type: Some(c.case_type.clone()),
-        stage: c
-            .workflow_status
-            .clone()
-            .or_else(|| c.agg_status_text.clone())
-            .or_else(|| c.stage.clone()),
+        // bug F 修复:workflow_status 为空时**不要**降级取 agg_status_text —— 那是 LLM 的一句话
+        // 长描述(可达 200+ 字),会把团队看板状态栏撑成一长句、卡片标题被挤竖排。只在 workflow_status
+        // / stage(都是短状态)间取;都没有就 None(看板显示占位),由全局分析补出短状态。
+        stage: c.workflow_status.clone().or_else(|| c.stage.clone()),
         status_detail: c.agg_resolution.clone(),
         claim_amount: c.agg_claim_amount,
         key_dates,

@@ -313,6 +313,14 @@ export function globalExtractCase(caseId: string): Promise<GlobalExtractReport> 
   return invoke<GlobalExtractReport>("global_extract_case", { caseId });
 }
 
+/**
+ * 项目1:把(通常已结案/判决的)案件提炼成「办案经验卡片」写入本地知识库,
+ * 返回写入文件的绝对路径。卡片落 raw/cases-experience/,search_local_kb 整库可检索复用。
+ */
+export function distillCaseExperience(caseId: string): Promise<string> {
+  return invoke<string>("distill_case_experience", { caseId });
+}
+
 /* ------------------------------------------------------------------ */
 /* 报告导出(2026-05-24 j)                                              */
 /* ------------------------------------------------------------------ */
@@ -494,6 +502,52 @@ export function deletePayment(id: string): Promise<number> {
 }
 
 /* ------------------------------------------------------------------ */
+/* 待办清单(2026-06-13 · case_todos · 胡彬律师反馈)                   */
+/* ------------------------------------------------------------------ */
+
+export interface Todo {
+  id: string;
+  case_id: string;
+  title: string;
+  done: number; // 0=未完成 1=已完成
+  done_at: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+/** 跨案件未完成待办(首页汇总)— 扁平结构带 case_name */
+export interface OpenTodoRow {
+  id: string;
+  case_id: string;
+  case_name: string;
+  title: string;
+  created_at: string;
+}
+
+export function addTodo(t: { case_id: string; title: string }): Promise<Todo> {
+  return invoke<Todo>("add_todo", { new: t });
+}
+
+export function listTodos(caseId: string): Promise<Todo[]> {
+  return invoke<Todo[]>("list_todos", { caseId });
+}
+
+export function listOpenTodos(): Promise<OpenTodoRow[]> {
+  return invoke<OpenTodoRow[]>("list_open_todos", {});
+}
+
+export function updateTodo(
+  id: string,
+  upd: { title?: string; done?: number },
+): Promise<number> {
+  return invoke<number>("update_todo", { id, upd });
+}
+
+export function deleteTodo(id: string): Promise<number> {
+  return invoke<number>("delete_todo", { id });
+}
+
+/* ------------------------------------------------------------------ */
 /* 审级实例(2026-06-11 · case_instances)                             */
 /* ------------------------------------------------------------------ */
 
@@ -531,6 +585,15 @@ export function deleteDocument(id: string): Promise<number> {
  */
 export function reextractDocument(docId: string): Promise<void> {
   return invoke<void>("reextract_document", { docId });
+}
+
+/**
+ * 2026-06-13(胡彬律师反馈)· 去水印重新识别。
+ * 带大幅水印的工商调档件/章程改用 PP-OCRv6(纯文字)+ 去水印过滤(强制,不回退 VL)。
+ * 同样不自动跑全案分析,识别完手动点「重新分析」。
+ */
+export function reextractDocumentDewatermark(docId: string): Promise<void> {
+  return invoke<void>("reextract_document_dewatermark", { docId });
 }
 
 /* ------------------------------------------------------------------ */
@@ -914,18 +977,20 @@ export function dbHealth(): Promise<DbHealth> {
  * 固定任务的 task_type 枚举。自由问 / 写文书入口传 null。
  *
  * V0.3.3:6 个功能单一的生成型任务(案件总览/证据目录/时间线/客户进展/查付款/待补材料)已删 ——
- * AI 助手已是 agent,用户直接打字提需求,它自己拆解、调工具、产出直答或可编辑文书。现仅剩 4 个
+ * AI 助手已是 agent,用户直接打字提需求,它自己拆解、调工具、产出直答或可编辑文书。现有 5 个
  * 复杂工具/分析型任务(都走 agent_loop):
  *  - compile_legal_basis:围绕诉求查法条+案例(没引用文档时)
  *  - verify_my_draft:核校这份引用的法条/案例是否真实(引用文档时)
  *  - find_similar_cases:找相似案例对比
  *  - simulate_opposition:站对方立场推演抗辩/进攻 + 我方应对
+ *  - deep_analysis:请求权基础+鉴定式深度分析(两闸交互确认后逐要件论证,落深度分析报告)
  */
 export type CaseChatTaskType =
   | "compile_legal_basis"
   | "verify_my_draft"
   | "find_similar_cases"
-  | "simulate_opposition";
+  | "simulate_opposition"
+  | "deep_analysis";
 
 /** chat_messages 表一行(后端 db::chat::ChatMessage 对应)。 */
 export interface ChatMessage {
@@ -974,6 +1039,11 @@ export interface AskQuestion {
 
 export type ChatStreamEvent =
   | { kind: "delta"; text: string }
+  | {
+      /** V0.3 · thinking 模型推理增量 — 前端显示「深度推理中…(N 字)」进度,不进正文 */
+      kind: "reasoning";
+      text: string;
+    }
   | {
       /** V0.2 D6.5 · 单次工具调用完成 — 前端 ToolCallTrace 追加一行 */
       kind: "tool_call";

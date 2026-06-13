@@ -38,6 +38,7 @@ import {
 import { CaseTimeline } from "./CaseTimeline";
 import { EditableField } from "./EditableField";
 import { SortableCard } from "./SortableCard";
+import { TodosCard } from "@/components/TodosCard";
 
 /**
  * 案件画像主视图。
@@ -166,6 +167,7 @@ export function CaseSnapshotView({
   // 卡片标题(用于 hidden_sections 匹配)
   const TITLES = {
     BASIC: "案件基本信息",
+    TODOS: "待办清单",
     INSTANCES: "审级历程",
     COURT: "办案机关人员",
     PARTY: "当事人联系人",
@@ -208,6 +210,7 @@ export function CaseSnapshotView({
   /* ---------- 6 张卡片渲染器,按 ov.resolveOrder 顺序排版 ---------- */
   const defaultSectionOrder = [
     TITLES.BASIC,
+    TITLES.TODOS,
     // ≥2 个审级才显示历程卡(单审级时与基本信息重复);紧跟基本信息,最新审级在上
     ...(instances.length >= 2 ? [TITLES.INSTANCES] : []),
     TITLES.COURT,
@@ -257,6 +260,21 @@ export function CaseSnapshotView({
             />
             <FactRow label="备注" value={snap.case_note} {...edit("case_note")} />
           </dl>
+        </CardSection>
+      ),
+    },
+    {
+      id: TITLES.TODOS,
+      render: (dragHandle) => (
+        <CardSection
+          title={TITLES.TODOS}
+          subtitle="手动待办,打钩完成;首页「待办汇总」会汇总各案未完成项"
+          isEditMode={isEditMode}
+          hidden={ov.overrides.hidden_sections?.includes(TITLES.TODOS)}
+          onToggleHidden={() => ov.toggleHidden(TITLES.TODOS)}
+          dragHandle={dragHandle}
+        >
+          <TodosCard caseId={caseData.id} />
         </CardSection>
       ),
     },
@@ -495,8 +513,21 @@ export function CaseSnapshotView({
     });
   }
 
+  // 2026-06-13:立场被改过、但 LLM 画像/报告还没按新立场重抽 → 持久提示(不分编辑模式)。
+  // 判据:overlay 后的 our_side ≠ DB 里 LLM 原值;重新分析后 agg_our_side 同步即消失。
+  const ourSideStale =
+    !!snap.our_side && snap.our_side !== caseData.agg_our_side;
+
   return (
     <div className="space-y-4">
+      {/* 立场已改但未重抽:报告/画像仍是旧立场,提示去重新分析 */}
+      {ourSideStale && (
+        <div className="rounded-md border border-sky-200 bg-sky-50 px-3 py-2 text-xs text-sky-800">
+          ⚠️ 我方代理立场已改为「{snap.our_side}」,但案件画像 / 报告仍按旧立场生成。
+          请到下方「原文件 → 重新分析」重跑,报告才会按新立场调整侧重。
+        </div>
+      )}
+
       {/* 编辑模式 banner */}
       {isEditMode && (
         <div className="flex items-center gap-2 rounded-md border border-foreground/40 bg-foreground/10 px-3 py-2 text-xs">
@@ -566,16 +597,68 @@ export function CaseSnapshotView({
           )}
         </p>
 
-        {/* 当事人对峙(P3a 仍只读 — array 字段 P3b 接) */}
-        <div className="mt-4 flex items-center gap-3 rounded-md bg-muted/40 px-4 py-3">
-          <div className="min-w-0 flex-1">
-            <div className="text-caption uppercase tracking-wider text-muted-foreground">原告 / 申请人</div>
-            <div className="mt-0.5 truncate text-sm font-medium text-foreground">{partyL || <Dash />}</div>
+        {/* 我方代理立场 + 当事人对峙(2026-06-13:立场驱动报告侧重/AI 立场/各 chip)*/}
+        <div className="mt-4 rounded-md bg-muted/40 px-4 py-3">
+          {/* 立场行:编辑态可选,非编辑态淡蓝 badge;未识别提示去确认 */}
+          <div className="mb-2 flex flex-wrap items-center gap-2">
+            <span className="text-caption uppercase tracking-wider text-muted-foreground">
+              我方代理立场
+            </span>
+            {isEditMode ? (
+              <>
+                <select
+                  value={snap.our_side ?? ""}
+                  onChange={(e) => {
+                    const v = e.target.value;
+                    if (v === "") ov.clearField("agg_our_side");
+                    else ov.setField("agg_our_side", v);
+                  }}
+                  className="rounded border border-border bg-background px-2 py-0.5 text-sm text-foreground"
+                  aria-label="选择我方代理立场"
+                >
+                  <option value="">未确认(跟随 AI 判断)</option>
+                  <option value="原告方">原告方</option>
+                  <option value="被告方">被告方</option>
+                  <option value="第三人">第三人</option>
+                  <option value="反诉混合">反诉混合</option>
+                </select>
+                {ov.hasFieldOverride("agg_our_side") && (
+                  <span className="text-xs text-sky-700">
+                    已手改 · 改完去下方「原文件 → 重新分析」让报告/画像按新立场重写
+                  </span>
+                )}
+              </>
+            ) : snap.our_side ? (
+              <span className="rounded bg-sky-50 px-2 py-0.5 text-sm font-medium text-sky-800">
+                {snap.our_side}
+              </span>
+            ) : (
+              <span className="text-sm text-muted-foreground">
+                未识别 —— 点右上角铅笔进入编辑模式确认我方是原告方还是被告方
+              </span>
+            )}
           </div>
-          <span className="shrink-0 font-mono text-xs text-muted-foreground">vs</span>
-          <div className="min-w-0 flex-1 text-right">
-            <div className="text-caption uppercase tracking-wider text-muted-foreground">被告 / 被申请人</div>
-            <div className="mt-0.5 truncate text-sm font-medium text-foreground">{partyR || <Dash />}</div>
+          {/* 对峙(P3a 仍只读 — array 字段 P3b 接);我方一侧淡蓝标注 */}
+          <div className="flex items-center gap-3">
+            <div className="min-w-0 flex-1">
+              <div className="text-caption uppercase tracking-wider text-muted-foreground">
+                原告 / 申请人
+                {snap.our_side === "原告方" && (
+                  <span className="ml-1 font-medium text-sky-700">· 我方</span>
+                )}
+              </div>
+              <div className="mt-0.5 truncate text-sm font-medium text-foreground">{partyL || <Dash />}</div>
+            </div>
+            <span className="shrink-0 font-mono text-xs text-muted-foreground">vs</span>
+            <div className="min-w-0 flex-1 text-right">
+              <div className="text-caption uppercase tracking-wider text-muted-foreground">
+                {snap.our_side === "被告方" && (
+                  <span className="mr-1 font-medium text-sky-700">我方 ·</span>
+                )}
+                被告 / 被申请人
+              </div>
+              <div className="mt-0.5 truncate text-sm font-medium text-foreground">{partyR || <Dash />}</div>
+            </div>
           </div>
         </div>
 

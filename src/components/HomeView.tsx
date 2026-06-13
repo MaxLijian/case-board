@@ -23,6 +23,7 @@ import {
   AlertTriangle,
   ShieldAlert,
 } from "lucide-react";
+import { toast } from "@/components/ui/toast";
 import {
   DndContext,
   type DragEndEvent,
@@ -44,7 +45,10 @@ import { formatYuan } from "@/lib/format";
 import {
   getCaseWithDocs,
   getSettings,
+  listOpenTodos,
+  type OpenTodoRow,
   updateHomeCaseOrder,
+  updateTodo,
   updateWorkflowStatus,
 } from "@/lib/api";
 import type { Case, Document } from "@/lib/types";
@@ -144,24 +148,31 @@ export function HomeView({ cases, userDisplayName, onPickCase, onImport }: HomeV
   // 用户拖过 → 按 userOrder 重排,没排过的(新案件 / userOrder 没覆盖到的)按默认顺序追加。
   // 已删的 case id 留在 userOrder 里也无害(idMap 找不到自动 filter)。
   const casesSorted = (() => {
-    if (!userOrder || userOrder.length === 0) return defaultSorted;
-    const byId = new Map(defaultSorted.map((c) => [c.caseData.id, c]));
-    const result: typeof defaultSorted = [];
-    const seen = new Set<string>();
-    for (const id of userOrder) {
-      const c = byId.get(id);
-      if (c && !seen.has(id)) {
-        result.push(c);
-        seen.add(id);
+    let ordered = defaultSorted;
+    if (userOrder && userOrder.length > 0) {
+      const byId = new Map(defaultSorted.map((c) => [c.caseData.id, c]));
+      const result: typeof defaultSorted = [];
+      const seen = new Set<string>();
+      for (const id of userOrder) {
+        const c = byId.get(id);
+        if (c && !seen.has(id)) {
+          result.push(c);
+          seen.add(id);
+        }
       }
-    }
-    for (const c of defaultSorted) {
-      if (!seen.has(c.caseData.id)) {
-        result.push(c);
-        seen.add(c.caseData.id);
+      for (const c of defaultSorted) {
+        if (!seen.has(c.caseData.id)) {
+          result.push(c);
+          seen.add(c.caseData.id);
+        }
       }
+      ordered = result;
     }
-    return result;
+    // 2026-06-13(胡彬律师反馈):已结案的一律沉到最后 —— 即便用户之前把它拖到了前面。
+    // 稳定分区:非结案保持原顺序在前,结案保持原顺序在后。
+    const active = ordered.filter((c) => c.status.id !== "closed");
+    const closed = ordered.filter((c) => c.status.id === "closed");
+    return [...active, ...closed];
   })();
 
   // 已结案 / 已调解的不在"重要日期"显示(用算好的 status 过滤,比 cases 原 workflow_status 准 — 后者可能为 null 走自动推断)
@@ -174,6 +185,12 @@ export function HomeView({ cases, userDisplayName, onPickCase, onImport }: HomeV
     setStatusOverride((m) => ({ ...m, [caseId]: status }));
     try {
       await updateWorkflowStatus(caseId, status);
+      if (status === "closed") {
+        toast(
+          "案件已结案。可进详情页点「沉淀为办案经验」存入知识库,日后同类案可检索复用",
+          "info",
+        );
+      }
     } catch (e) {
       console.warn("updateWorkflowStatus failed", e);
     }
@@ -258,6 +275,8 @@ export function HomeView({ cases, userDisplayName, onPickCase, onImport }: HomeV
               >
                 <SortableContext items={sortedIds} strategy={rectSortingStrategy}>
                   <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+                    {/* 待办汇总固定置顶第一格(胡彬律师反馈):不进 SortableContext,不可拖、永远在最前 */}
+                    <TodoSummary onPickCase={onPickCase} />
                     {casesSorted.map(({ caseData, status }) => (
                       <SortableCaseCard
                         key={caseData.id}
@@ -681,6 +700,90 @@ function ImportantDates({
           )}
         </div>
       )}
+    </div>
+  );
+}
+
+/** 待办汇总 widget(2026-06-13 胡彬律师反馈):跨案件未完成待办,按案分组,打钩即完成消失。 */
+function TodoSummary({ onPickCase }: { onPickCase: (caseId: string) => void }) {
+  const [rows, setRows] = useState<OpenTodoRow[]>([]);
+
+  useEffect(() => {
+    let cancelled = false;
+    listOpenTodos()
+      .then((r) => {
+        if (!cancelled) setRows(r);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const handleComplete = async (id: string) => {
+    // 乐观移除(打钩消失)
+    const prev = rows;
+    setRows((r) => r.filter((t) => t.id !== id));
+    try {
+      await updateTodo(id, { done: 1 });
+    } catch (e) {
+      setRows(prev); // 回滚
+      alert(`完成失败:${e}`);
+    }
+  };
+
+  // 按案件分组(后端已按 case_name、组内创建倒序)
+  const groups: { caseId: string; caseName: string; items: OpenTodoRow[] }[] = [];
+  for (const r of rows) {
+    const last = groups[groups.length - 1];
+    if (last && last.caseId === r.case_id) last.items.push(r);
+    else groups.push({ caseId: r.case_id, caseName: r.case_name, items: [r] });
+  }
+
+  // 没待办就不显示(不占首页卡片格子)。
+  if (rows.length === 0) return null;
+
+  return (
+    <div className="rounded-xl border border-border bg-card p-5">
+      <div className="mb-3 flex items-baseline justify-between">
+        <h2 className="text-sm font-semibold tracking-tight">待办汇总</h2>
+        <span className="font-mono text-caption uppercase tracking-wider text-muted-foreground">
+          {rows.length} TODO
+        </span>
+      </div>
+      {/* 固定成一张卡片高度,待办多了内部滚动(不再随条数无限变长)。 */}
+      <div className="max-h-64 space-y-3 overflow-y-auto pr-1">
+        {groups.map((g) => (
+            <div key={g.caseId}>
+              <button
+                type="button"
+                onClick={() => onPickCase(g.caseId)}
+                className="mb-1 text-xs font-medium text-sky-700 hover:underline"
+              >
+                {g.caseName}
+              </button>
+              <ul className="space-y-0.5">
+                {g.items.map((t) => (
+                  <li
+                    key={t.id}
+                    className="group flex items-center gap-2.5 rounded-md px-1.5 py-1 hover:bg-muted/40"
+                  >
+                    <button
+                      type="button"
+                      onClick={() => void handleComplete(t.id)}
+                      aria-label="标记完成"
+                      title="打钩完成"
+                      className="flex size-4 shrink-0 items-center justify-center rounded-[4px] border border-muted-foreground/50 hover:border-sky-600 hover:bg-sky-50"
+                    />
+                    <span className="flex-1 truncate text-sm text-foreground">
+                      {t.title}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          ))}
+        </div>
     </div>
   );
 }

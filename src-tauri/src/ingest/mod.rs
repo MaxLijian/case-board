@@ -13,4 +13,5 @@ pub mod mineru_http;
 pub mod ocr;
 pub mod paddle_vl_http;
 pub mod pipeline;
+pub mod ppocrv6_http;
 pub mod scanner;

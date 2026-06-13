@@ -341,7 +341,13 @@ pub async fn extract_one(
 
     // 1. 文本抽取(textutil / read_direct / pdf-inspector→pdftotext / 图片→OCR 标记)
     let t0 = Instant::now();
-    let text_extract_result = extract_text(path, kind);
+    // 2026-06-13:去水印重识别(force_backend=ppocrv6)时强制走 OCR —— 用户明确要 OCR 去水印,
+    // 不要因为带水印 PDF 恰好有可抽文本层就跳过 OCR(那层往往也被水印污染)。
+    let text_extract_result = if ocr_ctx.force_backend.is_some() {
+        Err("__NEEDS_OCR__".to_string())
+    } else {
+        extract_text(path, kind)
+    };
     let text = match text_extract_result {
         Ok((t, backend)) => {
             let chars = t.chars().count() as i64;
@@ -361,7 +367,9 @@ pub async fn extract_one(
         Err(e) if e == "__NEEDS_OCR__" => {
             // text_extract 阶段没抽出来 → 走 OCR(也记一条 OCR metric)
             // 失败时的 backend 标签:云端写主力名(实际可能主备都试过,error_short 里有全程)
-            let ocr_backend = if ocr_ctx.cloud_enabled {
+            let ocr_backend = if ocr_ctx.force_backend.as_deref() == Some("ppocrv6") {
+                "ppocrv6"
+            } else if ocr_ctx.cloud_enabled {
                 if ocr_ctx.cloud_primary == "paddle-vl" {
                     "paddle-vl"
                 } else {

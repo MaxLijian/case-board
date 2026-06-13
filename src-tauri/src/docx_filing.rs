@@ -129,6 +129,37 @@ fn xml_escape(s: &str) -> String {
     out
 }
 
+/// 把中文语境里的半角标点规范化为全角(导出 Word 时静默执行,借鉴开源「文格」audit_text 的自动版)。
+/// 保守策略:仅当标点紧邻 CJK 时转 —— 数字小数点/千分位(3.5 / 1,000)、英文、时间(3:30)、
+/// 案号里的字母数字都不受影响;括号/引号因配对与语境(英文括号、代码)易误改,暂不自动转。
+fn normalize_cjk_punct(s: &str) -> String {
+    fn is_cjk(c: char) -> bool {
+        matches!(c as u32, 0x3400..=0x4DBF | 0x4E00..=0x9FFF | 0xF900..=0xFAFF)
+    }
+    let chars: Vec<char> = s.chars().collect();
+    let mut out = String::with_capacity(s.len());
+    for (i, &c) in chars.iter().enumerate() {
+        let prev_cjk = i > 0 && is_cjk(chars[i - 1]);
+        let next = chars.get(i + 1).copied();
+        let next_cjk = next.map(is_cjk).unwrap_or(false);
+        let next_digit = next.map(|c| c.is_ascii_digit()).unwrap_or(false);
+        let mapped = match c {
+            // 逗号/句号:前后都须 CJK,避免 1,000 / 3.5 / 行尾英文缩写被误改
+            ',' if prev_cjk && next_cjk => '，',
+            '.' if prev_cjk && next_cjk => '。',
+            // 分号/问号/叹号:前为 CJK 即可(无数字歧义)
+            ';' if prev_cjk => '；',
+            '?' if prev_cjk => '？',
+            '!' if prev_cjk => '！',
+            // 冒号:前为 CJK 且后非数字(避免时间 3:30、比例 2:1)
+            ':' if prev_cjk && !next_digit => '：',
+            _ => c,
+        };
+        out.push(mapped);
+    }
+    out
+}
+
 /// 去掉 HTML 注释(artifact MD 头部带 `<!-- chat artifact ... -->`),避免 pulldown 当内联 HTML。
 fn strip_html_comments(md: &str) -> String {
     let mut out = String::with_capacity(md.len());
@@ -203,7 +234,9 @@ impl Walker {
             match ev {
                 Event::Start(tag) => self.start(tag),
                 Event::End(tag) => self.end(tag),
-                Event::Text(t) | Event::Code(t) => self.push_text(&t),
+                // 正文文本做中文标点规范化(导出 Word 静默规范);Code(行内代码)原样不碰。
+                Event::Text(t) => self.push_text(&normalize_cjk_punct(&t)),
+                Event::Code(t) => self.push_text(&t),
                 // 内联/块级 HTML 当字面量文本处理(转义后输出),既不丢内容也不注入 HTML
                 Event::Html(t) | Event::InlineHtml(t) => self.push_text(&t),
                 // 软换行:中文文书同段内不插空格;硬换行同样并段(MVP)

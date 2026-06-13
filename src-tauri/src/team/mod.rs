@@ -266,7 +266,10 @@ pub struct TeamEdit {
 }
 
 /// 编辑请求允许改的字段白名单(防滑向协同编辑的硬边界,提案 §3.2bis)。
-pub const EDITABLE_FIELDS: [&str; 2] = ["workflow_status", "note"];
+/// 2026-06-13 老板拍板:团队是本地案件的**只读镜像 + 备注**,不具备编辑本地案件数据的能力
+/// (状态等只在各自本地诉讼看板改 → cases::update_workflow_status,本地 owner 是唯一权威源)。
+/// 故只允许 "note"(可见即可写),去掉 "workflow_status"(曾导致团队改状态回写本地、刷掉本地手设,bug C)。
+pub const EDITABLE_FIELDS: [&str; 1] = ["note"];
 
 /// 状态序:只升不降(合并取 rank 高者)。未知状态 -1(永远被覆盖)。
 pub fn edit_status_rank(status: &str) -> i32 {

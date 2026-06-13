@@ -31,6 +31,9 @@ pub enum TaskType {
     VerifyMyDraft,
     /// 模拟对抗:站对方立场推演抗辩/进攻 + 我方应对(走 agent_loop,查支持对方的法条/类案)
     SimulateOpposition,
+    /// 深度分析:请求权基础 + 鉴定式方法论,两闸交互确认(候选请求权清单 → 大纲)后逐要件论证,
+    /// 落一份深度分析报告 artifact(走 agent_loop,逐条 get_law_article 校验法条)。
+    DeepAnalysis,
 }
 
 impl TaskType {
@@ -41,6 +44,7 @@ impl TaskType {
             Some("find_similar_cases") => Self::FindSimilarCases,
             Some("verify_my_draft") => Self::VerifyMyDraft,
             Some("simulate_opposition") => Self::SimulateOpposition,
+            Some("deep_analysis") => Self::DeepAnalysis,
             _ => Self::FreeChat,
         }
     }
@@ -53,6 +57,7 @@ impl TaskType {
             Self::FindSimilarCases => Some("find_similar_cases"),
             Self::VerifyMyDraft => Some("verify_my_draft"),
             Self::SimulateOpposition => Some("simulate_opposition"),
+            Self::DeepAnalysis => Some("deep_analysis"),
         }
     }
 
@@ -65,6 +70,7 @@ impl TaskType {
                 | Self::FindSimilarCases
                 | Self::VerifyMyDraft
                 | Self::SimulateOpposition
+                | Self::DeepAnalysis
         )
     }
 }
@@ -121,6 +127,31 @@ pub(crate) fn case_snapshot_md(case: &Case) -> String {
 
     // 当事人
     s.push_str("\n【当事人】\n");
+    // 2026-06-13:我方代理立场置顶。用户确认值(override)权威,LLM 抽的 agg_our_side 次之。
+    // 所有 chip(模拟对抗/类案检索/法律依据)和 AI 应答据此定攻防,不再"猜我方"。
+    let llm_side = case
+        .agg_our_side
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
+    let user_side = crate::db::cases::user_override_our_side(case.user_overrides_json.as_deref());
+    match user_side.as_deref().or(llm_side) {
+        Some(side) => {
+            // 律师改过立场、但 LLM 值(及每个当事人 is_our_side 标记)还没经「重新分析」同步时,
+            // 二者会冲突 → 明确以案件级确认值为准,消除 AI 站反风险(advisor 命门:override 未重抽窗口)。
+            if user_side.is_some() && user_side.as_deref() != llm_side {
+                s.push_str(&format!(
+                    "- 我方代理立场: {}(律师已确认,**与下方个别当事人 [我方]/[对方] 标记或案件报告冲突时一律以此为准**;旧标记/旧报告需「重新分析」后才同步)\n",
+                    side
+                ));
+            } else {
+                push_kv(&mut s, "我方代理立场", Some(side));
+            }
+        }
+        None => s.push_str(
+            "- 我方代理立场: 未确认(若要做立场化分析/对抗/检索,先确认我方是原告方还是被告方;未确认前保持中立、勿臆断)\n",
+        ),
+    }
     push_json_list(&mut s, "原告/申请人", case.agg_plaintiffs.as_deref());
     push_json_list(&mut s, "被告/被申请人", case.agg_defendants.as_deref());
     push_json_list(&mut s, "第三人", case.agg_third_parties.as_deref());
@@ -237,10 +268,16 @@ fn summarize_party_contacts(json: &str) -> String {
         let role = item.get("role").and_then(|x| x.as_str()).unwrap_or("");
         let phone = item.get("phone").and_then(|x| x.as_str()).unwrap_or("");
         let aliases = item.get("aliases").and_then(|x| x.as_array());
+        // 2026-06-13:把 is_our_side 标出来(此前读了却丢弃 → AI 看不到谁是我方,各 chip 只能瞎猜)。
+        let side = match item.get("is_our_side").and_then(|x| x.as_bool()) {
+            Some(true) => " [我方]",
+            Some(false) => " [对方]",
+            None => "",
+        };
         if name.is_empty() && role.is_empty() {
             continue;
         }
-        out.push_str(&format!("- {} ({})", name, role));
+        out.push_str(&format!("- {} ({}){}", name, role, side));
         if !phone.is_empty() {
             out.push_str(&format!(", 电话 {}", phone));
         }

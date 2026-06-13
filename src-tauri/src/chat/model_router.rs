@@ -4,7 +4,7 @@
 //!
 //! **用户在设置里只有一个选择 `cloud_llm_model`(= 三档「模型档位」)**:
 //!   - `"deepseek-v4-flash"`(默认)= **全局 Flash**:所有任务都走 flash(便宜,约 pro 的 1/3 价)。
-//!   - `"deepseek-v4-pro"` / `"deepseek-v4-pro-thinking"` = **全局 Pro**:所有任务都走 pro(更准更贵)。
+//!   - `"deepseek-v4-pro"` = **全局 Pro**:所有任务都走 pro(更准更贵;实测 v4-pro 本身即思考模型,无独立 -thinking 变体)。
 //!   - `"auto"` = **自动挡**:简单任务走 flash、复杂任务走 pro(下面的 task 路由表)。
 //!
 //! 关键:**非 auto 档绝不"偷偷"把某些任务升到 pro**(老逻辑工具型 chip 强制 pro 烧钱,已废)。
@@ -41,15 +41,16 @@ impl ModelChoice {
         }
     }
 
-    /// DeepSeek V4 Pro:推理 + 工具调用更稳定,适合法律论证/工具任务。
-    /// `with_reasoning=true` 时切到 `deepseek-v4-pro-thinking`(开思考链)。
-    pub fn pro(with_reasoning: bool) -> Self {
+    /// DeepSeek V4 Pro:推理 + 工具调用,适合法律论证/工具任务。
+    ///
+    /// **实测 2026-06-13**:`deepseek-v4-pro` 本身即思考模型 —— 不带任何 thinking 参数也默认返回
+    /// `reasoning_content`;且思考 + strict 工具调用同时正常(工具轮回传 reasoning_content 已在
+    /// agent_loop 处理)。DeepSeek V4 **全系(flash/pro)都是思考模式,没有独立的 `-thinking` 变体**
+    /// (`/models` 只列 flash/pro;调 `deepseek-v4-pro-thinking` 直接 400)。故 `with_reasoning` 入参
+    /// 已无实际意义,保留仅为兼容签名,一律返回 `deepseek-v4-pro`。
+    pub fn pro(_with_reasoning: bool) -> Self {
         Self {
-            model: if with_reasoning {
-                "deepseek-v4-pro-thinking".into()
-            } else {
-                "deepseek-v4-pro".into()
-            },
+            model: "deepseek-v4-pro".into(),
             temperature: 0.15,
             max_tokens: MAX_OUTPUT_TOKENS,
         }
@@ -84,11 +85,13 @@ pub fn route_model(task: TaskType, user_message: &str, settings: &Settings) -> M
 
     // 自动挡(auto):按任务复杂度分流。
     match task {
-        // 4 个工具/分析型 → pro(不开 reasoning,保持稳定 strict mode)
+        // 工具/分析型 + 深度分析 → pro。deepseek-v4-pro 本身即思考模型(实测默认开推理),
+        // 思考 + strict 工具调用实测正常,深度分析走 pro 就已是「推理 + 工具」模式。
         TaskType::CompileLegalBasis
         | TaskType::FindSimilarCases
         | TaskType::VerifyMyDraft
-        | TaskType::SimulateOpposition => ModelChoice::pro(false),
+        | TaskType::SimulateOpposition
+        | TaskType::DeepAnalysis => ModelChoice::pro(false),
         // 自由问 → 启发式
         TaskType::FreeChat => route_free_chat(user_message),
     }

@@ -85,7 +85,7 @@ pub struct Settings {
     pub cloud_llm_endpoint: Option<String>,
     /// 云端 LLM 模型档位(V0.3 统一为唯一的模型选择,被 `model_router::route_model` 读取):
     ///   - `'deepseek-v4-flash'`(默认)= 全局 Flash(便宜,约 pro 的 1/3 价)
-    ///   - `'deepseek-v4-pro'` / `'deepseek-v4-pro-thinking'` = 全局 Pro(更准更贵)
+    ///   - `'deepseek-v4-pro'` = 全局 Pro(更准更贵;实测 v4-pro 本身即思考模型,无独立 -thinking 变体)
     ///   - `'auto'` = 自动挡(简单走 flash,复杂走 pro)
     ///
     /// 默认 flash;不再有"工具型任务偷偷强制 pro"的隐藏逻辑。
@@ -145,7 +145,7 @@ pub struct Settings {
     /// `None` = 不限制。超出阈值时,chat 自动降级到 KB Stale 命中,不再发起在线调用。
     pub yuandian_monthly_credit_limit: Option<u32>,
 
-    // V0.3:模型档位已统一到 `cloud_llm_model`(flash / pro / pro-thinking / 'auto' 自动挡),
+    // V0.3:模型档位已统一到 `cloud_llm_model`(flash / pro / 'auto' 自动挡),
     // 原 `chat_default_model` 字段已废弃移除(旧 settings.json 里的该键会被 serde 忽略)。
     /// chat 总上下文 char 预算(默认 300_000,~200K token)
     pub chat_context_budget_total: Option<u32>,

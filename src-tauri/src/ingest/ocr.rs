@@ -99,6 +99,10 @@ pub struct OcrContext {
     /// 云端 OCR 主力:`"mineru"`(默认)/ `"paddle-vl"`(Settings.effective_ocr_cloud_primary)。
     /// 主力失败 / 超时 / 额度用完时,若另一家 token 已填则自动切换(动态主备)。
     pub cloud_primary: String,
+    /// 2026-06-13:文档级强制后端(目前只有 `"ppocrv6"` 去水印)。
+    /// Some 时**只走该后端、不回退**(用户已明确选去水印,回退到 VL 会把水印垃圾又喂回来)。
+    /// 由 process_one_doc 从 `documents.ocr_backend_override` 注入。
+    pub force_backend: Option<String>,
 }
 
 /// 走 MinerU 精准 HTTP API(2026-05-25 V0.1.10 替代 CLI 子进程)。
@@ -138,6 +142,43 @@ pub async fn extract_with_ocr(path: &Path, ctx: &OcrContext) -> OcrResult {
             }
         }
     };
+
+    // ===== 文档级强制后端(去水印,2026-06-13):只走该后端、不回退 =====
+    // 用户对带水印的工商调档件点了「去水印重识别」→ 强制 PP-OCRv6 + 去水印。
+    // 失败直接透传(回退到 VL 会把水印垃圾又喂回来,正是要逃离的)。
+    if let Some(fb) = ctx.force_backend.as_deref() {
+        if fb == "ppocrv6" {
+            // PP-OCRv6 走 AIStudio,复用 PaddleOCR 的 token(同平台同账号)。
+            let token = ctx
+                .paddle_vl_token
+                .as_deref()
+                .map(str::trim)
+                .filter(|t| !t.is_empty());
+            let Some(token) = token else {
+                return OcrResult::Failed {
+                    error: "去水印 OCR(PP-OCRv6)需在设置里填 PaddleOCR(百度 AI Studio)token".into(),
+                    attempted: vec!["ppocrv6"],
+                };
+            };
+            return match crate::ingest::ppocrv6_http::extract_with_ppocrv6(
+                path,
+                token,
+                PADDLE_VL_TIMEOUT_SEC,
+            )
+            .await
+            {
+                Ok(text) => OcrResult::Ok {
+                    text,
+                    backend: "ppocrv6",
+                    elapsed_ms: started.elapsed().as_millis(),
+                },
+                Err(e) => OcrResult::Failed {
+                    error: format!("ppocrv6: {}", e),
+                    attempted: vec!["ppocrv6"],
+                },
+            };
+        }
+    }
 
     if ctx.cloud_enabled {
         // ===== 云端模式:主/备动态切换(2026-06-12) =====
@@ -261,7 +302,7 @@ const LOCAL_VISION_MAX_PAGES: u32 = 50;
 /// 4. 调 :8899/v1/chat/completions(MiniCPM-V 4.6 + mmproj)
 /// 5. 返回纯文本
 ///
-/// 实测:M3 Max 13-15 秒/页,关键字段 100% 命中。
+/// 2026-05-23 R&D 实测:M3 Max 13-15 秒/页,关键字段 100% 命中。
 fn run_local_vision(path: &Path) -> Result<String, String> {
     let ext = path
         .extension()

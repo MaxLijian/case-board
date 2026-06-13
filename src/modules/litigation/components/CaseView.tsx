@@ -1,5 +1,6 @@
 import { useRef, useState } from "react";
 import {
+  BookMarked,
   BookOpen,
   FolderSearch,
   Loader2,
@@ -10,7 +11,13 @@ import {
 
 import { Button } from "@/components/ui/button";
 import { toast } from "@/components/ui/toast";
-import { deleteDocument, globalExtractCase, reextractDocument } from "@/lib/api";
+import {
+  deleteDocument,
+  distillCaseExperience,
+  globalExtractCase,
+  reextractDocument,
+  reextractDocumentDewatermark,
+} from "@/lib/api";
 import { confirmDialog } from "@/lib/dialog";
 import { type Case, type Document } from "@/lib/types";
 import { formatRelativeTime, shortenPath } from "@/lib/format";
@@ -130,10 +137,29 @@ export function CaseView({
   const handleReextract = async (doc: Document) => {
     try {
       await reextractDocument(doc.id);
-      toast(`已开始重新抽取「${doc.filename}」`, "success");
+      // 2026-06-13(胡彬律师反馈):重识别不再自动跑全案分析(省钱)。
+      // 多个文档逐个重识别完后,手动点一次「重新分析」更新画像即可。
+      toast(
+        `已开始重新识别「${doc.filename}」· 识别完(可多个一起)后点「重新分析」更新画像`,
+        "success",
+      );
       onReloadCase();
     } catch (e) {
       toast(`重新抽取失败:${e}`, "error");
+    }
+  };
+
+  // 2026-06-13(胡彬律师反馈)· 去水印重识别:带大幅水印的工商调档件强制 PP-OCRv6+去水印。
+  const handleReextractDewatermark = async (doc: Document) => {
+    try {
+      await reextractDocumentDewatermark(doc.id);
+      toast(
+        `已对「${doc.filename}」去水印重新识别(PP-OCRv6)· 识别完点「重新分析」更新画像`,
+        "success",
+      );
+      onReloadCase();
+    } catch (e) {
+      toast(`去水印重识别失败:${e}`, "error");
     }
   };
 
@@ -156,6 +182,23 @@ export function CaseView({
       toast(`全案分析失败:${e}`, "error");
     } finally {
       setReanalyzing(false);
+    }
+  };
+
+  // 项目1:把(已结案/判决)案件提炼成办案经验卡片,写入本地知识库供同类案检索复用(不脱敏)。
+  const [distilling, setDistilling] = useState(false);
+  const handleDistill = async () => {
+    if (!selectedCase || distilling) return;
+    setDistilling(true);
+    toast("正在提炼办案经验卡片入知识库(约 10-30 秒)…", "info");
+    try {
+      const path = await distillCaseExperience(selectedCase.id);
+      toast("✓ 已沉淀为办案经验,存入本地知识库,日后同类案可检索复用", "success");
+      console.info("experience card saved:", path);
+    } catch (e) {
+      toast(`沉淀失败:${e}`, "error");
+    } finally {
+      setDistilling(false);
     }
   };
 
@@ -251,6 +294,26 @@ export function CaseView({
             </Button>
             <button
               type="button"
+              onClick={handleDistill}
+              disabled={
+                !selectedCase || distilling || !selectedCase?.case_report_path
+              }
+              className="rounded p-1.5 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:cursor-not-allowed disabled:opacity-30"
+              title={
+                selectedCase?.case_report_path
+                  ? "把本案提炼成办案经验卡片,存入本地知识库,日后同类案可检索复用"
+                  : "需先生成案件报告,才能沉淀办案经验"
+              }
+              aria-label="沉淀为办案经验"
+            >
+              {distilling ? (
+                <Loader2 className="size-4 animate-spin" />
+              ) : (
+                <BookMarked className="size-4" />
+              )}
+            </button>
+            <button
+              type="button"
               onClick={onRefreshFiles}
               disabled={
                 !selectedCase ||
@@ -342,6 +405,7 @@ export function CaseView({
                     onRevealDoc={onRevealDoc}
                     onDeleteDoc={handleDeleteDoc}
                     onReextract={handleReextract}
+                    onReextractDewatermark={handleReextractDewatermark}
                     onRefresh={onRefreshFiles}
                     refreshing={refreshingFiles}
                     onReanalyze={handleReanalyze}
