@@ -8,7 +8,9 @@ import { SettingsModal } from "@/components/SettingsModal";
 import { OnboardingWizard } from "@/components/OnboardingWizard";
 import { DeepSeekBalanceChip } from "@/components/DeepSeekBalanceChip";
 import { FeedbackButton } from "@/components/FeedbackButton";
-import { ModuleTabs, type ModuleId } from "@/components/ModuleTabs";
+import { ModuleTabs } from "@/components/ModuleTabs";
+// 私人专属功能接缝(双轨发布模型):开源仓返回 [] → 无「独立」顶层 tab。
+import { getPrivateTopTabs } from "@/private";
 import { HomeView } from "@/components/HomeView";
 import { HomeDropZone } from "@/components/HomeDropZone";
 import { RunningTaskOverlay } from "@/components/RunningTaskOverlay";
@@ -104,7 +106,8 @@ function App() {
    * 2026-05-24 b:顶部三模块 tab(诉讼 / 非诉 / 工具)。默认诉讼。
    * 各模块完全独立 — 切到非诉/工具不影响诉讼的 cases/selectedId 等 state。
    */
-  const [activeModule, setActiveModule] = useState<ModuleId>("litigation");
+  // string 而非 ModuleId:私人专属顶层 tab(「独立」)的 id 由接缝动态提供,开源仓为空。
+  const [activeModule, setActiveModule] = useState<string>("litigation");
   /** 进度条最小化状态(作者 2026-05-23 晚十:文件多时不挡其他东西) */
   const [progressMinimized, setProgressMinimized] = useState(false);
   /**
@@ -196,7 +199,7 @@ function App() {
 
   // 切 tab 包装:从设置 tab 切走时,如果有未保存改动,先 confirm
   const setActiveModuleSafe = useCallback(
-    async (target: ModuleId) => {
+    async (target: string) => {
       if (activeModule === "settings" && target !== "settings" && settingsDirty) {
         const ok = await confirmDialog(
           "设置里有未保存的改动,切走会丢失这些改动 — 确定继续吗?",
@@ -820,6 +823,18 @@ function App() {
               onSaved={refreshUserDisplayName}
             />
           </div>
+        )}
+        {/* 私人专属顶层 tab(双轨发布模型;开源仓接缝返回 [] → 此分支永不命中) */}
+        {getPrivateTopTabs().map(
+          (t) =>
+            activeModule === t.id && (
+              <div
+                key={t.id}
+                className="h-full overflow-auto bg-background px-8 py-6"
+              >
+                <div className="mx-auto w-full max-w-5xl">{t.render()}</div>
+              </div>
+            ),
         )}
       </div>
 

@@ -469,6 +469,10 @@ pub async fn case_chat_impl(
             .await
             .map_err(|e| format!("入库 assistant 消息失败: {}", e))?;
 
+            // chat 完成后后台增量索引:本轮若调过 get_law_article/get_case_detail,新缓存的
+            // 法条/案例补进语义索引(单飞 + 无新增早退,所以多数轮次是廉价 no-op)。
+            crate::spawn_kb_auto_index(app.clone());
+
             Ok(CaseChatResult {
                 user_message_id: user_msg_id,
                 assistant_message_id: assistant_id,

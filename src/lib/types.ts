@@ -383,6 +383,8 @@ export interface Settings {
   embedding_model: string | null;
   embedding_api_key: string | null;
   embedding_verified_at: string | null;
+  /** 本地知识库语义索引「自动维护」开关。null/true=开(默认),false=关。 */
+  kb_semantic_auto_index: boolean | null;
 
   /** 2026-05-25 V0.1.6:MinerU key 验证通过时间(ISO 8601)。非 null = 绿勾。 */
   mineru_verified_at: string | null;
@@ -396,6 +398,9 @@ export interface Settings {
    *  没在数组里的新案件自动追加在末尾;已删的 case_id 留着也无害(前端 filter)。
    */
   home_case_order: string[] | null;
+
+  /** 2026-06-14:首页"日程日历"功能开关(默认 false / 关闭) */
+  home_calendar_enabled: boolean;
 
   // ===== V0.2 D2 新增 · 本地知识库 + chat V2 budget (对应 settings.rs 同名字段) =====
   /** 本地法律知识库根目录(支持 ~/);null = 不启用。 */

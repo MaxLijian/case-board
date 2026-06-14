@@ -150,7 +150,7 @@ export function verifyYuandianKey(apiKey: string): Promise<VerifyResult> {
   return invoke<VerifyResult>("verify_yuandian_key", { apiKey });
 }
 
-/** 2026-05-25 V0.1.8:检测远程最新版本(lawtools.top 仓库的 version.json)。
+/** 2026-05-25 V0.1.8:检测远程最新版本(发布站点的 version.json)。
  *  失败时 has_update=false + error 字段填上原因,前端可静默忽略。*/
 export function checkForUpdate(): Promise<UpdateInfo> {
   return invoke<UpdateInfo>("check_for_update");
@@ -511,6 +511,8 @@ export interface Todo {
   title: string;
   done: number; // 0=未完成 1=已完成
   done_at: string | null;
+  /** 2026-06-14:可选"重要日期"(ISO "YYYY-MM-DD");有则汇入首页日程日历 */
+  due_date: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -521,10 +523,15 @@ export interface OpenTodoRow {
   case_id: string;
   case_name: string;
   title: string;
+  due_date: string | null;
   created_at: string;
 }
 
-export function addTodo(t: { case_id: string; title: string }): Promise<Todo> {
+export function addTodo(t: {
+  case_id: string;
+  title: string;
+  due_date?: string | null;
+}): Promise<Todo> {
   return invoke<Todo>("add_todo", { new: t });
 }
 
@@ -538,13 +545,39 @@ export function listOpenTodos(): Promise<OpenTodoRow[]> {
 
 export function updateTodo(
   id: string,
-  upd: { title?: string; done?: number },
+  upd: { title?: string; done?: number; due_date?: string | null },
 ): Promise<number> {
   return invoke<number>("update_todo", { id, upd });
 }
 
 export function deleteTodo(id: string): Promise<number> {
   return invoke<number>("delete_todo", { id });
+}
+
+/* ------------------------------------------------------------------ */
+/* 独立日历日程(2026-06-14 · calendar_events · 不绑案件,日历右键添加)  */
+/* ------------------------------------------------------------------ */
+
+export interface CalendarEvent {
+  id: string;
+  date: string; // "YYYY-MM-DD"
+  title: string;
+  created_at: string;
+}
+
+export function addCalendarEvent(e: {
+  date: string;
+  title: string;
+}): Promise<CalendarEvent> {
+  return invoke<CalendarEvent>("add_calendar_event", { new: e });
+}
+
+export function listCalendarEvents(): Promise<CalendarEvent[]> {
+  return invoke<CalendarEvent[]>("list_calendar_events", {});
+}
+
+export function deleteCalendarEvent(id: string): Promise<number> {
+  return invoke<number>("delete_calendar_event", { id });
 }
 
 /* ------------------------------------------------------------------ */
@@ -1250,6 +1283,24 @@ export interface KbPruneStats {
  */
 export function pruneYuandianCache(maxAgeDays: number): Promise<KbPruneStats> {
   return invoke<KbPruneStats>("prune_yuandian_cache", { maxAgeDays });
+}
+
+/** 本地知识库语义向量索引规模(对应 Rust `local_kb::semantic::KbIndexStats`)。 */
+export interface KbIndexStats {
+  /** 已索引文件数(法律 + 案例 + 企业等) */
+  files: number;
+  /** 切片(向量)数 */
+  chunks: number;
+}
+
+/** 读语义索引现有规模(不建不改)。 */
+export function getLocalKbIndexStats(): Promise<KbIndexStats> {
+  return invoke<KbIndexStats>("get_local_kb_index_stats");
+}
+
+/** 重建/更新本地知识库语义向量索引(法条+案例+企业;增量,进度走 `kb_index_progress` 事件)。 */
+export function buildLocalKbSemanticIndex(): Promise<KbIndexStats> {
+  return invoke<KbIndexStats>("build_local_kb_semantic_index");
 }
 
 /** 月度元典积分账(对应 Rust `db::credits::MonthlyCredits`)。 */

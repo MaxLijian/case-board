@@ -23,6 +23,8 @@ import { confirmDialog } from "@/lib/dialog";
 
 import { Button } from "@/components/ui/button";
 import { HoverHint } from "@/components/HoverHint";
+import { GroupQrCode } from "@/components/GroupQrCode";
+import { KbSemanticIndexCard } from "@/components/KbSemanticIndexCard";
 import {
   createLocalKb,
   detectKbStatus,
@@ -380,24 +382,99 @@ export function SettingsModal({
                 // 窗口恒 ≥1024(minWidth),lg 断点始终生效 → 默认就是两列。
                 // modal 模式:保持单列堆叠,窄弹窗里两列会挤。
                 isPage
-                  ? "grid grid-cols-1 lg:grid-cols-2 gap-x-5 gap-y-6 items-start"
+                  ? "grid grid-cols-1 lg:grid-cols-2 gap-x-5 gap-y-5 items-start"
                   : "space-y-6",
               )}
             >
-              {/* 个人信息 */}
-              <Section title="个人信息">
-                <Field label="称呼" hint="首页问候用,例:刘律师 / 周律师 / 李三">
-                  <input
-                    type="text"
-                    value={settings.user_display_name ?? ""}
-                    onChange={(e) =>
-                      updateField("user_display_name", e.target.value || null)
-                    }
-                    placeholder="例:刘律师"
-                    className={inputCls}
-                  />
-                </Field>
-              </Section>
+              {/* 第一排:个人信息 | 日程日历 | 加群二维码(独立 3 列;下方 2 列配对不受影响) */}
+              <div className="lg:col-span-2">
+                <div className="grid grid-cols-1 items-stretch gap-5 lg:grid-cols-3">
+                  {/* 个人信息 */}
+                  <Section title="个人信息" fill>
+                    <Field
+                      label="称呼"
+                      hint="首页问候用,例:刘律师 / 周律师 / 李三"
+                    >
+                      <input
+                        type="text"
+                        value={settings.user_display_name ?? ""}
+                        onChange={(e) =>
+                          updateField(
+                            "user_display_name",
+                            e.target.value || null,
+                          )
+                        }
+                        placeholder="例:刘律师"
+                        className={inputCls}
+                      />
+                    </Field>
+                  </Section>
+
+                  {/* 首页日程日历开关 */}
+                  <Section
+                    title="首页日程日历(可选)"
+                    desc="把开庭/续封、带日期的待办、手动提醒汇总到首页日历;默认关闭,想体验就开,随时可关。"
+                    fill
+                  >
+                    <label className="flex items-center justify-between gap-3">
+                      <span className="text-xs text-muted-foreground">
+                        {settings.home_calendar_enabled
+                          ? "已开启 — 首页显示"
+                          : "已关闭 — 不显示"}
+                      </span>
+                      <button
+                        type="button"
+                        role="switch"
+                        aria-checked={settings.home_calendar_enabled}
+                        onClick={() =>
+                          updateField(
+                            "home_calendar_enabled",
+                            !settings.home_calendar_enabled,
+                          )
+                        }
+                        className={cn(
+                          "relative inline-flex h-5 w-9 shrink-0 items-center rounded-full transition-colors",
+                          settings.home_calendar_enabled
+                            ? "bg-sky-600"
+                            : "bg-muted",
+                        )}
+                      >
+                        <span
+                          className={cn(
+                            "inline-block size-4 rounded-full bg-white shadow transition-transform",
+                            settings.home_calendar_enabled
+                              ? "translate-x-4"
+                              : "translate-x-0.5",
+                          )}
+                        />
+                      </button>
+                    </label>
+                  </Section>
+
+                  {/* 交流群:标题"微信扫码加群" + 缩略图,悬停放大到正常尺寸
+                      (托管 lawtools.top,过期换图不必重新发版) */}
+                  <Section title="微信扫码加群" fill>
+                    <div className="flex items-center gap-3">
+                      <div className="group relative shrink-0">
+                        <GroupQrCode
+                          size={60}
+                          className="cursor-pointer rounded border border-border"
+                        />
+                        {/* 悬停放大浮层:向下展开,z 高于下方卡片,不挡鼠标 */}
+                        <div className="pointer-events-none absolute left-0 top-full z-50 mt-2 hidden group-hover:block">
+                          <GroupQrCode
+                            size={300}
+                            className="rounded-md border border-border shadow-xl"
+                          />
+                        </div>
+                      </div>
+                      <p className="text-xs text-muted-foreground">
+                        鼠标悬停二维码放大,微信扫码进群 —— 反馈、提需求、看更新。
+                      </p>
+                    </div>
+                  </Section>
+                </div>
+              </div>
 
               {/* V0.3:本地模型已隐藏 → 只走云端。三个 API key(MinerU / DeepSeek / 元典)常显,
                   不再用 cloud_enabled 开关包裹(该字段保留兼容,前端不再读)。 */}
@@ -455,6 +532,152 @@ export function SettingsModal({
                       )}
                     </Field>
                   </Section>
+
+              {/* 元典法律开放平台 — 法规/案例/企业信息检索 + 执行查被执行人,跟云端 LLM 独立 */}
+              <Section
+                title="元典法律开放平台"
+                desc="查询法律法规、裁判案例、企业信息的数据源"
+                link={{
+                  label: "注册后在「个人中心」申请 API key",
+                  href: "https://open.chineselaw.com/profile",
+                }}
+              >
+                <Field label="API Key">
+                  <div className="flex items-center gap-2">
+                    <input
+                      type="password"
+                      value={settings.yuandian_api_key ?? ""}
+                      onChange={(e) => {
+                        updateField(
+                          "yuandian_api_key",
+                          e.target.value || null,
+                        );
+                        // 改 key 就重置验证状态
+                        if (yuandianStatus !== "idle") {
+                          setYuandianStatus("idle");
+                          setYuandianMsg("");
+                          updateField("yuandian_verified_at", null);
+                        }
+                      }}
+                      placeholder="sk_..."
+                      className={cn(inputCls, "flex-1")}
+                      autoComplete="off"
+                    />
+                    <VerifyStatusIcon status={yuandianStatus} />
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="outline"
+                      className="disabled:cursor-not-allowed"
+                      onClick={handleVerifyYuandian}
+                      disabled={
+                        yuandianStatus === "verifying" ||
+                        !settings.yuandian_api_key?.trim()
+                      }
+                    >
+                      {yuandianStatus === "verifying" ? (
+                        <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                      ) : (
+                        "验证"
+                      )}
+                    </Button>
+                  </div>
+                  {yuandianStatus === "fail" && yuandianMsg && (
+                    <p className="mt-1.5 text-xs text-red-600">
+                      ✗ {yuandianMsg}
+                    </p>
+                  )}
+                  {yuandianStatus === "ok" && (
+                    <p className="mt-1.5 text-xs text-green-700">
+                      ✓ 已验证通过,可以使用「查被执行人」等元典功能
+                    </p>
+                  )}
+                </Field>
+              </Section>
+
+                  <Section
+                    title="DeepSeek"
+                    link={{
+                      label: "点这里申请 API Key",
+                      href: "https://platform.deepseek.com/api_keys",
+                    }}
+                  >
+                    <Field label="API Key">
+                      <div className="flex items-center gap-2">
+                        <input
+                          type="password"
+                          value={settings.cloud_llm_api_key ?? ""}
+                          onChange={(e) => {
+                            updateField(
+                              "cloud_llm_api_key",
+                              e.target.value || null,
+                            );
+                            if (deepseekStatus !== "idle") {
+                              setDeepseekStatus("idle");
+                              setDeepseekMsg("");
+                              updateField("deepseek_verified_at", null);
+                            }
+                          }}
+                          placeholder="sk-..."
+                          className={cn(inputCls, "flex-1")}
+                          autoComplete="off"
+                        />
+                        <VerifyStatusIcon status={deepseekStatus} />
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="outline"
+                          className="disabled:cursor-not-allowed"
+                          onClick={handleVerifyDeepSeek}
+                          disabled={
+                            deepseekStatus === "verifying" ||
+                            !settings.cloud_llm_api_key?.trim()
+                          }
+                        >
+                          {deepseekStatus === "verifying" ? (
+                            <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                          ) : (
+                            "验证"
+                          )}
+                        </Button>
+                      </div>
+                      {deepseekStatus === "fail" && deepseekMsg && (
+                        <p className="mt-1.5 text-xs text-red-600">
+                          ✗ {deepseekMsg}
+                        </p>
+                      )}
+                      {deepseekStatus === "ok" && (
+                        <p className="mt-1.5 text-xs text-green-700">
+                          ✓ 已验证通过,可以使用
+                        </p>
+                      )}
+                    </Field>
+                    <Field label="模型档位">
+                      <select
+                        value={settings.cloud_llm_model ?? "deepseek-v4-flash"}
+                        onChange={(e) =>
+                          updateField("cloud_llm_model", e.target.value || null)
+                        }
+                        className={inputCls}
+                      >
+                        <option value="deepseek-v4-flash">
+                          Flash · 便宜快(默认 · 约 Pro 的 1/3 价 · 推荐日常)
+                        </option>
+                        <option value="deepseek-v4-pro">
+                          Pro · 更准更贵(复杂分析/起草可换它)
+                        </option>
+                        <option value="auto">
+                          自动挡 · 简单走 Flash、复杂走 Pro(均衡)
+                        </option>
+                      </select>
+                      <p className="mt-1 text-label text-muted-foreground">
+                        全程按这个档位走。Flash 省钱;觉得效果不够就换 Pro 或自动挡。
+                      </p>
+                    </Field>
+                    {/* Endpoint 默认 https://api.deepseek.com,改了反而可能用不了 → 不暴露输入框,
+                        cloud_llm_endpoint 留 null,后端按默认走。 */}
+                  </Section>
+                </>
 
                   {/* 2026-06-12:PaddleOCR VL-1.6(AI Studio)。填了 key 即自动成为
                       MinerU 的备用(失败/超时/额度用完自动切换);也可切为主力。
@@ -556,152 +779,6 @@ export function SettingsModal({
                     )}
                   </Section>
 
-                  <Section
-                    title="DeepSeek"
-                    link={{
-                      label: "点这里申请 API Key",
-                      href: "https://platform.deepseek.com/api_keys",
-                    }}
-                  >
-                    <Field label="API Key">
-                      <div className="flex items-center gap-2">
-                        <input
-                          type="password"
-                          value={settings.cloud_llm_api_key ?? ""}
-                          onChange={(e) => {
-                            updateField(
-                              "cloud_llm_api_key",
-                              e.target.value || null,
-                            );
-                            if (deepseekStatus !== "idle") {
-                              setDeepseekStatus("idle");
-                              setDeepseekMsg("");
-                              updateField("deepseek_verified_at", null);
-                            }
-                          }}
-                          placeholder="sk-..."
-                          className={cn(inputCls, "flex-1")}
-                          autoComplete="off"
-                        />
-                        <VerifyStatusIcon status={deepseekStatus} />
-                        <Button
-                          type="button"
-                          size="sm"
-                          variant="outline"
-                          className="disabled:cursor-not-allowed"
-                          onClick={handleVerifyDeepSeek}
-                          disabled={
-                            deepseekStatus === "verifying" ||
-                            !settings.cloud_llm_api_key?.trim()
-                          }
-                        >
-                          {deepseekStatus === "verifying" ? (
-                            <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                          ) : (
-                            "验证"
-                          )}
-                        </Button>
-                      </div>
-                      {deepseekStatus === "fail" && deepseekMsg && (
-                        <p className="mt-1.5 text-xs text-red-600">
-                          ✗ {deepseekMsg}
-                        </p>
-                      )}
-                      {deepseekStatus === "ok" && (
-                        <p className="mt-1.5 text-xs text-green-700">
-                          ✓ 已验证通过,可以使用
-                        </p>
-                      )}
-                    </Field>
-                    <Field label="模型档位">
-                      <select
-                        value={settings.cloud_llm_model ?? "deepseek-v4-flash"}
-                        onChange={(e) =>
-                          updateField("cloud_llm_model", e.target.value || null)
-                        }
-                        className={inputCls}
-                      >
-                        <option value="deepseek-v4-flash">
-                          Flash · 便宜快(默认 · 约 Pro 的 1/3 价 · 推荐日常)
-                        </option>
-                        <option value="deepseek-v4-pro">
-                          Pro · 更准更贵(复杂分析/起草可换它)
-                        </option>
-                        <option value="auto">
-                          自动挡 · 简单走 Flash、复杂走 Pro(均衡)
-                        </option>
-                      </select>
-                      <p className="mt-1 text-label text-muted-foreground">
-                        全程按这个档位走。Flash 省钱;觉得效果不够就换 Pro 或自动挡。
-                      </p>
-                    </Field>
-                    {/* Endpoint 默认 https://api.deepseek.com,改了反而可能用不了 → 不暴露输入框,
-                        cloud_llm_endpoint 留 null,后端按默认走。 */}
-                  </Section>
-                </>
-
-              {/* 元典法律开放平台 — 法规/案例/企业信息检索 + 执行查被执行人,跟云端 LLM 独立 */}
-              <Section
-                title="元典法律开放平台"
-                desc="查询法律法规、裁判案例、企业信息的数据源"
-                link={{
-                  label: "注册后在「个人中心」申请 API key",
-                  href: "https://open.chineselaw.com/profile",
-                }}
-              >
-                <Field label="API Key">
-                  <div className="flex items-center gap-2">
-                    <input
-                      type="password"
-                      value={settings.yuandian_api_key ?? ""}
-                      onChange={(e) => {
-                        updateField(
-                          "yuandian_api_key",
-                          e.target.value || null,
-                        );
-                        // 改 key 就重置验证状态
-                        if (yuandianStatus !== "idle") {
-                          setYuandianStatus("idle");
-                          setYuandianMsg("");
-                          updateField("yuandian_verified_at", null);
-                        }
-                      }}
-                      placeholder="sk_..."
-                      className={cn(inputCls, "flex-1")}
-                      autoComplete="off"
-                    />
-                    <VerifyStatusIcon status={yuandianStatus} />
-                    <Button
-                      type="button"
-                      size="sm"
-                      variant="outline"
-                      className="disabled:cursor-not-allowed"
-                      onClick={handleVerifyYuandian}
-                      disabled={
-                        yuandianStatus === "verifying" ||
-                        !settings.yuandian_api_key?.trim()
-                      }
-                    >
-                      {yuandianStatus === "verifying" ? (
-                        <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                      ) : (
-                        "验证"
-                      )}
-                    </Button>
-                  </div>
-                  {yuandianStatus === "fail" && yuandianMsg && (
-                    <p className="mt-1.5 text-xs text-red-600">
-                      ✗ {yuandianMsg}
-                    </p>
-                  )}
-                  {yuandianStatus === "ok" && (
-                    <p className="mt-1.5 text-xs text-green-700">
-                      ✓ 已验证通过,可以使用「查被执行人」等元典功能
-                    </p>
-                  )}
-                </Field>
-              </Section>
-
               {/* 硅基流动 — Embedding 语义检索,填了才启用,否则回退关键词选材料。
                   接口地址 / 模型不暴露:留空后端默认硅基流动 bge-m3(免费),不需要改。 */}
               <Section
@@ -758,6 +835,13 @@ export function SettingsModal({
                   )}
                 </Field>
               </Section>
+
+              {/* 法律向量检索维护(法条+案例+企业语义索引)— 公开功能 */}
+              <KbSemanticIndexCard
+                embeddingConfigured={!!settings.embedding_api_key?.trim()}
+                autoIndex={settings.kb_semantic_auto_index !== false}
+                onAutoChange={(v) => updateField("kb_semantic_auto_index", v)}
+              />
 
               {/* 快递100 — 快递查询工具用(寄送达 / 材料追踪),独立可选 */}
               <Section
@@ -832,13 +916,11 @@ export function SettingsModal({
             </div>
           )}
 
-          {/* 项目署名 */}
+          {/* 作者署名 */}
           <div className="mt-2 border-t border-border pt-5 text-center">
-            <p className="text-sm font-medium text-foreground">
-              CaseBoard · 案件看板
-            </p>
+            <p className="text-sm font-medium text-foreground">刘成 律师</p>
             <p className="mt-0.5 text-xs text-muted-foreground">
-              开源项目 · PolyForm Noncommercial 1.0.0
+              江苏漫修（无锡）律师事务所
             </p>
           </div>
         </div>
@@ -933,14 +1015,17 @@ function Section({
   desc,
   link,
   children,
+  fill,
 }: {
   title: string;
   desc?: string;
   link?: { label: string; href: string };
   children: React.ReactNode;
+  /** true 时撑满网格行高(同一排卡片等高)。默认 false = 自然紧凑高度。 */
+  fill?: boolean;
 }) {
   return (
-    <section>
+    <section className={fill ? "flex h-full flex-col" : undefined}>
       <div className="mb-3 flex items-start justify-between gap-3">
         <div>
           <h3 className="text-sm font-semibold text-foreground">{title}</h3>
@@ -958,7 +1043,13 @@ function Section({
           </button>
         )}
       </div>
-      <div className="space-y-3 rounded-lg border border-border bg-background/50 p-4">
+      {/* 默认自然高度(配对相近高度卡 + items-start 不留空);fill=true 时撑满行高(同排等高) */}
+      <div
+        className={cn(
+          "space-y-3 rounded-lg border border-border bg-background/50 p-4",
+          fill && "flex-1",
+        )}
+      >
         {children}
       </div>
     </section>
@@ -1604,7 +1695,7 @@ function LocalKbCard({
   return (
     <Section
       title="本地法律知识库"
-      desc="启用后,法律检索优先查本地缓存,只在缺时调元典 — 大幅省积分。所有元典外查结果会自动反哺本地。"
+      desc="启用后,法律检索优先查本地缓存,只在缺时调元典 — 大幅省积分。"
     >
       {/* 状态条 */}
       <div className="rounded-md border border-border bg-background p-3">

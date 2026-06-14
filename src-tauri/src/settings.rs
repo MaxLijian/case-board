@@ -112,6 +112,10 @@ pub struct Settings {
     /// embedding key 验证通过时间(坑#11:新 cloud key 必配 verified_at,改 key 重置)
     pub embedding_verified_at: Option<String>,
 
+    /// 本地知识库语义向量索引「自动维护」开关(出报告 / 启动后台增量索引)。
+    /// `None`/`Some(true)` = 开(默认);`Some(false)` = 关(只手动重建)。
+    pub kb_semantic_auto_index: Option<bool>,
+
     /// 2026-05-24 e:匿名反馈识别码(UUID v4),首次启动时自动生成 + 持久化。
     /// 跟用户名/邮箱无关 — 作者拿到反馈 MD 后可以识别"这个 ID 之前反馈过"。
     /// 用户能在设置里清空重生成(类比换匿名 ID)。
@@ -131,6 +135,11 @@ pub struct Settings {
     /// 按 listCases 默认顺序追加在末尾(新建案件不会被忘记)。
     /// 删过的案件 id 留在数组里也无害(前端 filter 掉)。
     pub home_case_order: Option<Vec<String>>,
+
+    /// 2026-06-14:首页"日程日历"功能开关(默认关闭)。
+    /// 该功能与待办清单略重复且卡片较大,做成可选 —— 用户在设置里手动打开体验,
+    /// 不好用可关掉,不影响其他功能。`#[serde(default)]` → 老 settings.json 缺此字段时为 false。
+    pub home_calendar_enabled: bool,
 
     // ===== V0.2 D2 新增 · 本地知识库 + chat V2 budget =====
     /// 2026-05-27 V0.2:本地法律知识库根目录(支持 `~/` tilde 展开)。

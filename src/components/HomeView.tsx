@@ -5,7 +5,6 @@ import {
   CalendarClock,
   CalendarDays,
   Check,
-  CheckSquare,
   ChevronDown,
   ChevronLeft,
   ChevronRight,
@@ -14,8 +13,9 @@ import {
   GripVertical,
   LayoutGrid,
   List,
+  Plus,
   ShieldAlert,
-  Square,
+  Trash2,
   X,
 } from "lucide-react";
 import { toast } from "@/components/ui/toast";
@@ -38,8 +38,12 @@ import { CSS } from "@dnd-kit/utilities";
 import { Button } from "@/components/ui/button";
 import { formatYuan } from "@/lib/format";
 import {
+  addCalendarEvent,
+  type CalendarEvent,
+  deleteCalendarEvent,
   getCaseWithDocs,
   getSettings,
+  listCalendarEvents,
   listOpenTodos,
   type OpenTodoRow,
   updateHomeCaseOrder,
@@ -67,7 +71,7 @@ export interface HomeViewProps {
 type ViewMode = "grid" | "list";
 type SortKey = "status" | "amount" | "filed_at" | "hearing";
 type SortDir = "asc" | "desc";
-type EventKind = "hearing" | "deadline";
+type EventKind = "hearing" | "deadline" | "todo" | "manual";
 
 interface CaseDisplayFields {
   caseNo: string | null;
@@ -97,6 +101,8 @@ interface UpcomingEvent {
   caseName: string;
   caseId: string;
   court?: string | null;
+  /** 仅 kind="manual"(独立日历日程):calendar_events.id,用于删除 */
+  id?: string;
 }
 
 const PRESERVATION_RE = /保全|续封|查封|冻结/;
@@ -115,8 +121,36 @@ export function HomeView({ cases, userDisplayName, onPickCase, onImport }: HomeV
   const [sortDir, setSortDir] = useState<SortDir>("asc");
   const [statusFilters, setStatusFilters] = useState<Set<StatusId>>(new Set());
   const [courtFilter, setCourtFilter] = useState("");
-  const [selectMode, setSelectMode] = useState(false);
-  const [selectedCaseIds, setSelectedCaseIds] = useState<Set<string>>(new Set());
+  // 带日期的待办 → 汇入日程日历(2026-06-14:手动日程 = 带日期的待办)
+  const [openTodos, setOpenTodos] = useState<OpenTodoRow[]>([]);
+  // 独立日历日程(不绑案件,日历右键添加)
+  const [manualEvents, setManualEvents] = useState<CalendarEvent[]>([]);
+  // 日程日历功能开关(默认关闭,设置里手动开)
+  const [calendarEnabled, setCalendarEnabled] = useState(false);
+
+  const reloadManualEvents = () => {
+    listCalendarEvents()
+      .then(setManualEvents)
+      .catch(() => {});
+  };
+  const handleAddCalendarEvent = async (date: string, title: string) => {
+    const t = title.trim();
+    if (!t) return;
+    try {
+      await addCalendarEvent({ date, title: t });
+      reloadManualEvents();
+    } catch (e) {
+      alert(`添加日程失败:${e}`);
+    }
+  };
+  const handleDeleteCalendarEvent = async (id: string) => {
+    try {
+      await deleteCalendarEvent(id);
+      setManualEvents((prev) => prev.filter((e) => e.id !== id));
+    } catch (e) {
+      alert(`删除日程失败:${e}`);
+    }
+  };
 
   useEffect(() => {
     let cancelled = false;
@@ -139,9 +173,28 @@ export function HomeView({ cases, userDisplayName, onPickCase, onImport }: HomeV
 
   useEffect(() => {
     let cancelled = false;
+    listOpenTodos()
+      .then((r) => {
+        if (!cancelled) setOpenTodos(r);
+      })
+      .catch(() => {});
+    listCalendarEvents()
+      .then((r) => {
+        if (!cancelled) setManualEvents(r);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [cases]);
+
+  useEffect(() => {
+    let cancelled = false;
     getSettings()
       .then((s) => {
-        if (!cancelled) setUserOrder(s.home_case_order);
+        if (cancelled) return;
+        setUserOrder(s.home_case_order);
+        setCalendarEnabled(s.home_calendar_enabled);
       })
       .catch(() => undefined);
     return () => {
@@ -222,15 +275,16 @@ export function HomeView({ cases, userDisplayName, onPickCase, onImport }: HomeV
     .filter(({ status }) => status.id !== "closed" && status.id !== "mediated")
     .map(({ caseData }) => caseData);
   const upcomingEvents = buildUpcomingEvents(activeCases);
-  const calendarEvents = buildAllCalendarEvents(activeCases);
+  const calendarEvents = [
+    ...buildAllCalendarEvents(activeCases),
+    ...buildTodoEvents(openTodos),
+    ...buildManualEvents(manualEvents),
+  ];
 
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 5 } }),
   );
   const sortedIds = filteredRows.map((row) => row.caseData.id);
-  const visibleIds = sortedIds;
-  const allVisibleSelected =
-    visibleIds.length > 0 && visibleIds.every((id) => selectedCaseIds.has(id));
 
   const handleChangeStatus = async (caseId: string, status: StatusId | null) => {
     setStatusOverride((m) => ({ ...m, [caseId]: status }));
@@ -272,37 +326,9 @@ export function HomeView({ cases, userDisplayName, onPickCase, onImport }: HomeV
     });
   };
 
-  const toggleSelected = (caseId: string) => {
-    setSelectedCaseIds((prev) => {
-      const next = new Set(prev);
-      if (next.has(caseId)) next.delete(caseId);
-      else next.add(caseId);
-      return next;
-    });
-  };
-
   const clearFilters = () => {
     setStatusFilters(new Set());
     setCourtFilter("");
-  };
-
-  const selectAllVisible = () => {
-    setSelectedCaseIds((prev) => {
-      const next = new Set(prev);
-      for (const id of visibleIds) next.add(id);
-      return next;
-    });
-  };
-
-  const invertVisible = () => {
-    setSelectedCaseIds((prev) => {
-      const next = new Set(prev);
-      for (const id of visibleIds) {
-        if (next.has(id)) next.delete(id);
-        else next.add(id);
-      }
-      return next;
-    });
   };
 
   return (
@@ -339,9 +365,14 @@ export function HomeView({ cases, userDisplayName, onPickCase, onImport }: HomeV
             <ImportantDates events={upcomingEvents} onPickCase={onPickCase} />
           </div>
 
-          {cases.length > 0 && (
+          {cases.length > 0 && calendarEnabled && (
             <div className="mb-8">
-              <CalendarPanel events={calendarEvents} onPickCase={onPickCase} />
+              <CalendarPanel
+                events={calendarEvents}
+                onPickCase={onPickCase}
+                onAddEvent={handleAddCalendarEvent}
+                onDeleteEvent={handleDeleteCalendarEvent}
+              />
             </div>
           )}
 
@@ -369,15 +400,6 @@ export function HomeView({ cases, userDisplayName, onPickCase, onImport }: HomeV
                   >
                     <List className="size-3.5" />
                   </IconToggle>
-                  <Button
-                    type="button"
-                    variant={selectMode ? "default" : "outline"}
-                    size="sm"
-                    onClick={() => setSelectMode((v) => !v)}
-                  >
-                    {selectMode ? <CheckSquare className="size-3.5" /> : <Square className="size-3.5" />}
-                    多选
-                  </Button>
                 </div>
               </div>
 
@@ -395,15 +417,15 @@ export function HomeView({ cases, userDisplayName, onPickCase, onImport }: HomeV
                     <option value="hearing">按最近开庭日</option>
                   </select>
                 </label>
-                <Button
+                {/* 与左右两个 select 同尺寸(px-2 py-1 text-xs),别用 Button size=sm(更高) */}
+                <button
                   type="button"
-                  variant="outline"
-                  size="sm"
                   onClick={() => setSortDir((d) => (d === "asc" ? "desc" : "asc"))}
+                  className="flex items-center gap-1 rounded-md border border-border bg-background px-2 py-1 text-xs text-foreground transition-colors hover:bg-accent"
                 >
                   <ArrowUpDown className="size-3.5" />
                   {sortDir === "asc" ? "升序" : "降序"}
-                </Button>
+                </button>
                 <label className="flex items-center gap-1.5 text-xs text-muted-foreground">
                   法院
                   <select
@@ -442,29 +464,6 @@ export function HomeView({ cases, userDisplayName, onPickCase, onImport }: HomeV
                 )}
               </div>
 
-              {selectMode && (
-                <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-dashed border-border bg-muted/30 p-3">
-                  <span className="text-sm text-foreground">
-                    已选 <strong>{selectedCaseIds.size}</strong> 个案件
-                  </span>
-                  <div className="flex flex-wrap gap-2">
-                    <Button
-                      type="button"
-                      variant="outline"
-                      size="sm"
-                      onClick={allVisibleSelected ? () => setSelectedCaseIds(new Set()) : selectAllVisible}
-                    >
-                      {allVisibleSelected ? "取消全选" : "全选当前结果"}
-                    </Button>
-                    <Button type="button" variant="outline" size="sm" onClick={invertVisible}>
-                      反选当前结果
-                    </Button>
-                    <Button type="button" variant="ghost" size="sm" onClick={() => setSelectedCaseIds(new Set())}>
-                      清空
-                    </Button>
-                  </div>
-                </div>
-              )}
             </div>
 
             {cases.length === 0 ? (
@@ -479,9 +478,6 @@ export function HomeView({ cases, userDisplayName, onPickCase, onImport }: HomeV
                   <CaseListRow
                     key={row.caseData.id}
                     row={row}
-                    selectMode={selectMode}
-                    selected={selectedCaseIds.has(row.caseData.id)}
-                    onToggleSelected={() => toggleSelected(row.caseData.id)}
                     onClick={() => onPickCase(row.caseData.id)}
                     onChangeStatus={(s) => handleChangeStatus(row.caseData.id, s)}
                   />
@@ -501,9 +497,6 @@ export function HomeView({ cases, userDisplayName, onPickCase, onImport }: HomeV
                       <SortableCaseCard
                         key={row.caseData.id}
                         row={row}
-                        selectMode={selectMode}
-                        selected={selectedCaseIds.has(row.caseData.id)}
-                        onToggleSelected={() => toggleSelected(row.caseData.id)}
                         onClick={() => onPickCase(row.caseData.id)}
                         onChangeStatus={(s) => handleChangeStatus(row.caseData.id, s)}
                       />
@@ -548,9 +541,6 @@ function IconToggle({
 
 function SortableCaseCard(props: {
   row: CaseRow;
-  selectMode: boolean;
-  selected: boolean;
-  onToggleSelected: () => void;
   onClick: () => void;
   onChangeStatus: (s: StatusId | null) => void;
 }) {
@@ -581,18 +571,12 @@ function SortableCaseCard(props: {
 
 function CaseCard({
   row,
-  selectMode,
-  selected,
-  onToggleSelected,
   onClick,
   onChangeStatus,
   dragHandleProps,
   isDragging,
 }: {
   row: CaseRow;
-  selectMode: boolean;
-  selected: boolean;
-  onToggleSelected: () => void;
   onClick: () => void;
   onChangeStatus: (s: StatusId | null) => void;
   dragHandleProps?: {
@@ -621,20 +605,7 @@ function CaseCard({
       tabIndex={0}
       aria-label={`打开案件 ${display.cause || caseData.name}`}
     >
-      {selectMode && (
-        <button
-          type="button"
-          aria-label={selected ? "取消选择案件" : "选择案件"}
-          onClick={(e) => {
-            e.stopPropagation();
-            onToggleSelected();
-          }}
-          className="absolute left-2 top-2 z-20 rounded-md bg-card/90 p-1 text-muted-foreground shadow-sm transition-colors hover:text-foreground"
-        >
-          {selected ? <CheckSquare className="size-4" /> : <Square className="size-4" />}
-        </button>
-      )}
-      {dragHandleProps && !selectMode && (
+      {dragHandleProps && (
         <button
           type="button"
           aria-label="拖动调整顺序"
@@ -689,16 +660,10 @@ function CaseCard({
 
 function CaseListRow({
   row,
-  selectMode,
-  selected,
-  onToggleSelected,
   onClick,
   onChangeStatus,
 }: {
   row: CaseRow;
-  selectMode: boolean;
-  selected: boolean;
-  onToggleSelected: () => void;
   onClick: () => void;
   onChangeStatus: (s: StatusId | null) => void;
 }) {
@@ -707,7 +672,6 @@ function CaseListRow({
     <div
       className={cn(
         "grid cursor-pointer grid-cols-[minmax(0,1.35fr)_minmax(0,1fr)_minmax(0,1fr)_minmax(0,1fr)_auto] items-center gap-3 border-b border-border px-4 py-3 text-left transition-colors last:border-b-0 hover:bg-muted/50",
-        selectMode && "grid-cols-[auto_minmax(0,1.35fr)_minmax(0,1fr)_minmax(0,1fr)_minmax(0,1fr)_auto]",
         status.id === "closed" && "opacity-60",
       )}
       onClick={onClick}
@@ -721,19 +685,6 @@ function CaseListRow({
       tabIndex={0}
       aria-label={`打开案件 ${display.cause || caseData.name}`}
     >
-      {selectMode && (
-        <button
-          type="button"
-          onClick={(e) => {
-            e.stopPropagation();
-            onToggleSelected();
-          }}
-          className="rounded-md p-1 text-muted-foreground hover:bg-accent hover:text-foreground"
-          aria-label={selected ? "取消选择案件" : "选择案件"}
-        >
-          {selected ? <CheckSquare className="size-4" /> : <Square className="size-4" />}
-        </button>
-      )}
       <div className="min-w-0">
         <div className="truncate text-sm font-semibold text-foreground">
           {display.cause || caseData.name}
@@ -962,6 +913,7 @@ function TodoSummary({ onPickCase }: { onPickCase: (caseId: string) => void }) {
     }
   };
 
+  const todayKey = toDateKey(new Date());
   // 按案件分组(后端已按 case_name、组内创建倒序)
   const groups: { caseId: string; caseName: string; items: OpenTodoRow[] }[] = [];
   for (const r of rows) {
@@ -1008,6 +960,19 @@ function TodoSummary({ onPickCase }: { onPickCase: (caseId: string) => void }) {
                     <span className="flex-1 truncate text-sm text-foreground">
                       {t.title}
                     </span>
+                    {t.due_date && (
+                      <span
+                        className={cn(
+                          "shrink-0 font-mono text-[11px]",
+                          t.due_date < todayKey
+                            ? "text-red-600 dark:text-red-400"
+                            : "text-muted-foreground",
+                        )}
+                        title={`日期 ${t.due_date}`}
+                      >
+                        {t.due_date.slice(5)}
+                      </span>
+                    )}
                   </li>
                 ))}
               </ul>
@@ -1035,7 +1000,14 @@ function EventRow({
         ? "amber"
         : "muted";
   const isPreserv = e.kind === "deadline" && PRESERVATION_RE.test(e.type);
-  const Icon = e.kind === "hearing" ? Gavel : isPreserv ? ShieldAlert : AlertTriangle;
+  const Icon =
+    e.kind === "hearing"
+      ? Gavel
+      : e.kind === "todo" || e.kind === "manual"
+        ? CalendarClock
+        : isPreserv
+          ? ShieldAlert
+          : AlertTriangle;
   const countdown =
     e.daysFromNow === 0 ? "D-DAY" : e.daysFromNow > 0 ? `D-${e.daysFromNow}` : `逾期${-e.daysFromNow}天`;
 
@@ -1121,9 +1093,13 @@ function EventRow({
 function CalendarPanel({
   events,
   onPickCase,
+  onAddEvent,
+  onDeleteEvent,
 }: {
   events: UpcomingEvent[];
   onPickCase: (caseId: string) => void;
+  onAddEvent: (date: string, title: string) => void | Promise<void>;
+  onDeleteEvent: (id: string) => void | Promise<void>;
 }) {
   const today = new Date();
   today.setHours(0, 0, 0, 0);
@@ -1145,6 +1121,34 @@ function CalendarPanel({
     setMonthCursor((d) => new Date(d.getFullYear(), d.getMonth() + offset, 1));
   };
 
+  // 折叠态(2026-06-14:作者反馈整月网格太占地方)。默认折叠成摘要卡,按用户选择持久化。
+  const [collapsed, setCollapsed] = useState(
+    () => localStorage.getItem("caseboard.home.calendarCollapsed") !== "false",
+  );
+  const toggleCollapsed = () => {
+    setCollapsed((v) => {
+      const next = !v;
+      localStorage.setItem("caseboard.home.calendarCollapsed", next ? "true" : "false");
+      return next;
+    });
+  };
+  // 摘要列表:近 30 天内逾期 + 所有未来日程,按临近程度升序(最紧迫在最前)。
+  const summaryEvents = [...events]
+    .filter((e) => e.daysFromNow >= -30)
+    .sort((a, b) => a.daysFromNow - b.daysFromNow);
+
+  // 右键某天 → 菜单 →「添加日程」(独立日程,不绑案件)
+  const [menu, setMenu] = useState<{ date: string; x: number; y: number } | null>(null);
+  const [addDate, setAddDate] = useState<string | null>(null);
+  const [addInput, setAddInput] = useState("");
+  const submitAdd = async () => {
+    const title = addInput.trim();
+    if (!addDate || !title) return;
+    await onAddEvent(addDate, title);
+    setAddInput("");
+    setAddDate(null);
+  };
+
   return (
     <section className="rounded-xl border border-border bg-card p-5">
       <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
@@ -1156,26 +1160,74 @@ function CalendarPanel({
           </span>
         </div>
         <div className="flex items-center gap-2">
-          <Button type="button" variant="outline" size="icon" onClick={() => moveMonth(-1)} title="上一月">
-            <ChevronLeft className="size-4" />
-          </Button>
-          <div className="w-28 text-center text-sm font-medium">{monthLabel}</div>
-          <Button type="button" variant="outline" size="icon" onClick={() => moveMonth(1)} title="下一月">
-            <ChevronRight className="size-4" />
-          </Button>
+          {!collapsed && (
+            <>
+              <Button type="button" variant="outline" size="icon" onClick={() => moveMonth(-1)} title="上一月">
+                <ChevronLeft className="size-4" />
+              </Button>
+              <div className="w-28 text-center text-sm font-medium">{monthLabel}</div>
+              <Button type="button" variant="outline" size="icon" onClick={() => moveMonth(1)} title="下一月">
+                <ChevronRight className="size-4" />
+              </Button>
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                onClick={() => {
+                  setMonthCursor(new Date(today.getFullYear(), today.getMonth(), 1));
+                  setSelectedDate(toDateKey(today));
+                }}
+              >
+                回到本月
+              </Button>
+            </>
+          )}
           <Button
             type="button"
             variant="ghost"
             size="sm"
-            onClick={() => {
-              setMonthCursor(new Date(today.getFullYear(), today.getMonth(), 1));
-              setSelectedDate(toDateKey(today));
-            }}
+            onClick={toggleCollapsed}
+            title={collapsed ? "展开整月日历" : "折叠成摘要卡"}
           >
-            回到本月
+            {collapsed ? "展开" : "折叠"}
+            <ChevronDown className={cn("size-4 transition-transform", !collapsed && "rotate-180")} />
           </Button>
         </div>
       </div>
+      {collapsed ? (
+        // 折叠态:固定高度摘要卡,日程多了内部上下滚动
+        <div className="max-h-52 space-y-1.5 overflow-y-auto rounded-lg border border-border bg-background/60 p-3">
+          {summaryEvents.length === 0 ? (
+            <p className="text-xs text-muted-foreground">
+              暂无近期日程(开庭 / 到期日由案件分析自动汇总到这里)
+            </p>
+          ) : (
+            summaryEvents.map((event, index) => (
+              <button
+                key={`${event.caseId}-${event.date}-${index}`}
+                type="button"
+                onClick={() => onPickCase(event.caseId)}
+                className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-xs hover:bg-muted/60"
+              >
+                <span className={cn("size-2 shrink-0 rounded-full", calendarDotClass(event))} />
+                <span className="shrink-0 font-mono text-caption text-muted-foreground">
+                  {event.date.slice(5)}
+                </span>
+                <span className="font-medium text-foreground">{event.type}</span>
+                <span className="truncate text-muted-foreground">{event.caseName}</span>
+                <span className="ml-auto shrink-0 font-mono text-caption text-muted-foreground">
+                  {event.daysFromNow === 0
+                    ? "D-DAY"
+                    : event.daysFromNow > 0
+                      ? `D-${event.daysFromNow}`
+                      : `逾期${-event.daysFromNow}天`}
+                </span>
+              </button>
+            ))
+          )}
+        </div>
+      ) : (
+        <>
       <div className="grid grid-cols-7 gap-px overflow-hidden rounded-lg border border-border bg-border">
         {["一", "二", "三", "四", "五", "六", "日"].map((d) => (
           <div key={d} className="bg-muted/70 px-2 py-1 text-center text-caption text-muted-foreground">
@@ -1193,10 +1245,16 @@ function CalendarPanel({
               key={key}
               type="button"
               onClick={() => setSelectedDate(key)}
+              onContextMenu={(e) => {
+                e.preventDefault();
+                setSelectedDate(key);
+                setMenu({ date: key, x: e.clientX, y: e.clientY });
+              }}
+              title="左键看当天日程 · 右键添加日程"
               className={cn(
-                "min-h-20 bg-card p-2 text-left transition-colors hover:bg-muted/50",
+                "min-h-16 bg-card p-2 text-left transition-colors hover:bg-sky-50 dark:hover:bg-sky-950/20",
                 !isCurrentMonth && "bg-muted/20 text-muted-foreground/50",
-                isSelected && "ring-2 ring-inset ring-foreground/40",
+                isSelected && "ring-2 ring-inset ring-sky-400",
                 isToday && "bg-blue-50 dark:bg-blue-950/20",
               )}
             >
@@ -1220,31 +1278,133 @@ function CalendarPanel({
         })}
       </div>
       <div className="mt-4 rounded-lg border border-border bg-background/60 p-3">
-        <div className="mb-2 text-xs font-medium text-foreground">{selectedDate} 日程</div>
+        <div className="mb-2 flex items-center justify-between">
+          <span className="text-xs font-medium text-foreground">{selectedDate} 日程</span>
+          <button
+            type="button"
+            onClick={() => {
+              setAddDate(selectedDate);
+              setAddInput("");
+            }}
+            className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] text-sky-700 transition-colors hover:bg-sky-50 dark:text-sky-300 dark:hover:bg-sky-950/30"
+          >
+            <Plus className="size-3" /> 添加
+          </button>
+        </div>
+        {addDate && (
+          <div className="mb-2 flex items-center gap-2 rounded-md border border-sky-200 bg-sky-50/70 px-2 py-1.5 dark:border-sky-900 dark:bg-sky-950/20">
+            <span className="shrink-0 font-mono text-[11px] text-muted-foreground">
+              {addDate.slice(5)}
+            </span>
+            <input
+              autoFocus
+              value={addInput}
+              onChange={(e) => setAddInput(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") {
+                  e.preventDefault();
+                  void submitAdd();
+                } else if (e.key === "Escape") {
+                  setAddDate(null);
+                }
+              }}
+              placeholder="写个日程…回车保存"
+              className="flex-1 bg-transparent text-xs outline-none placeholder:text-muted-foreground"
+            />
+            <button
+              type="button"
+              onClick={() => void submitAdd()}
+              className="shrink-0 rounded bg-sky-600 px-2 py-0.5 text-[11px] font-medium text-white hover:bg-sky-700"
+            >
+              保存
+            </button>
+            <button
+              type="button"
+              onClick={() => setAddDate(null)}
+              className="shrink-0 rounded px-1.5 py-0.5 text-[11px] text-muted-foreground hover:bg-muted"
+            >
+              取消
+            </button>
+          </div>
+        )}
         {selectedEvents.length === 0 ? (
-          <p className="text-xs text-muted-foreground">当天暂无日程</p>
+          <p className="text-xs text-muted-foreground">
+            当天暂无日程 · 右键日期或点「添加」可加一条
+          </p>
         ) : (
           <ul className="space-y-1.5">
-            {selectedEvents.map((event, index) => (
-              <li key={`${event.caseId}-${event.date}-${index}`}>
-                <button
-                  type="button"
-                  onClick={() => onPickCase(event.caseId)}
-                  className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-xs hover:bg-muted/60"
+            {selectedEvents.map((event, index) => {
+              const isManual = event.kind === "manual";
+              const countdown =
+                event.daysFromNow === 0
+                  ? "D-DAY"
+                  : event.daysFromNow > 0
+                    ? `D-${event.daysFromNow}`
+                    : `逾期${-event.daysFromNow}天`;
+              return (
+                <li
+                  key={`${event.id ?? event.caseId}-${event.date}-${index}`}
+                  className="group flex items-center gap-2 rounded-md px-2 py-1.5 text-xs hover:bg-muted/60"
                 >
-                  <span className={cn("size-2 rounded-full", calendarDotClass(event))} />
-                  <span className="font-medium text-foreground">{event.type}</span>
-                  <span className="truncate text-muted-foreground">{event.caseName}</span>
-                  {event.court && <span className="hidden truncate text-muted-foreground/70 md:inline">{event.court}</span>}
+                  <span className={cn("size-2 shrink-0 rounded-full", calendarDotClass(event))} />
+                  {isManual ? (
+                    <span className="flex-1 font-medium text-foreground">{event.type}</span>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={() => onPickCase(event.caseId)}
+                      className="flex flex-1 items-center gap-2 overflow-hidden text-left"
+                    >
+                      <span className="shrink-0 font-medium text-foreground">{event.type}</span>
+                      <span className="truncate text-muted-foreground">{event.caseName}</span>
+                    </button>
+                  )}
                   <span className="ml-auto shrink-0 font-mono text-caption text-muted-foreground">
-                    {event.daysFromNow === 0 ? "D-DAY" : event.daysFromNow > 0 ? `D-${event.daysFromNow}` : `逾期${-event.daysFromNow}天`}
+                    {countdown}
                   </span>
-                </button>
-              </li>
-            ))}
+                  {isManual && event.id && (
+                    <button
+                      type="button"
+                      onClick={() => void onDeleteEvent(event.id!)}
+                      aria-label="删除日程"
+                      className="shrink-0 rounded p-0.5 text-muted-foreground opacity-0 transition hover:bg-destructive/10 hover:text-destructive group-hover:opacity-100"
+                    >
+                      <Trash2 className="size-3.5" />
+                    </button>
+                  )}
+                </li>
+              );
+            })}
           </ul>
         )}
       </div>
+        </>
+      )}
+
+      {/* 右键某天弹出的菜单:点「添加日程」→ 打开当天添加输入 */}
+      {menu && (
+        <>
+          <div className="fixed inset-0 z-40" onClick={() => setMenu(null)} />
+          <div
+            className="fixed z-50 overflow-hidden rounded-md border border-border bg-card shadow-lg"
+            style={{ left: menu.x, top: menu.y }}
+          >
+            <button
+              type="button"
+              onClick={() => {
+                setSelectedDate(menu.date);
+                setAddDate(menu.date);
+                setAddInput("");
+                setMenu(null);
+              }}
+              className="flex w-full items-center gap-2 px-3 py-2 text-left text-xs hover:bg-sky-50 dark:hover:bg-sky-950/30"
+            >
+              <Plus className="size-3.5 text-sky-600" />
+              在 {menu.date.slice(5)} 添加日程
+            </button>
+          </div>
+        </>
+      )}
     </section>
   );
 }
@@ -1358,7 +1518,9 @@ function buildUpcomingEvents(cases: Case[]): UpcomingEvent[] {
           }
         }
       }
-      if (kd.expires_at) {
+      // 2026-06-14:重要提醒只留"开庭 + 续封/保全"两类真要紧的。其余到期项
+      // (上诉期/举证期限等)交给底下日程日历显示,这里不重复堆。
+      if (kd.expires_at && PRESERVATION_RE.test(kd.event ?? "到期")) {
         const d = parseDate(kd.expires_at);
         if (d) {
           const daysFromNow = diffDays(d, now);
@@ -1433,6 +1595,50 @@ function buildAllCalendarEvents(cases: Case[]): UpcomingEvent[] {
   return events.sort((a, b) => a.date.localeCompare(b.date));
 }
 
+/** 带日期的待办(绑案件)→ 日历事件,kind="todo"。 */
+function buildTodoEvents(todos: OpenTodoRow[]): UpcomingEvent[] {
+  const now = todayDate();
+  const out: UpcomingEvent[] = [];
+  for (const t of todos) {
+    if (!t.due_date) continue;
+    const d = parseDate(t.due_date);
+    if (!d) continue;
+    out.push({
+      kind: "todo",
+      date: t.due_date,
+      daysFromNow: diffDays(d, now),
+      type: t.title,
+      note: null,
+      caseName: t.case_name,
+      caseId: t.case_id,
+      court: null,
+    });
+  }
+  return out;
+}
+
+/** 独立日历日程(不绑案件)→ 日历事件,kind="manual",带 id 供删除。 */
+function buildManualEvents(rows: CalendarEvent[]): UpcomingEvent[] {
+  const now = todayDate();
+  const out: UpcomingEvent[] = [];
+  for (const e of rows) {
+    const d = parseDate(e.date);
+    if (!d) continue;
+    out.push({
+      kind: "manual",
+      date: e.date,
+      daysFromNow: diffDays(d, now),
+      type: e.title,
+      note: null,
+      caseName: "",
+      caseId: "",
+      court: null,
+      id: e.id,
+    });
+  }
+  return out;
+}
+
 function readKeyDates(c: Case): Array<{
   date?: string;
   event?: string;
@@ -1457,7 +1663,10 @@ function eventUrgency(e: UpcomingEvent): "overdue" | "urgent" | "normal" {
 function calendarDotClass(e: UpcomingEvent): string {
   if (e.daysFromNow < 0 || e.daysFromNow <= 7) return "bg-red-500";
   if (e.daysFromNow <= 30) return "bg-amber-500";
-  return e.kind === "hearing" ? "bg-blue-500" : "bg-slate-400";
+  if (e.kind === "hearing") return "bg-blue-500";
+  if (e.kind === "todo") return "bg-violet-500";
+  if (e.kind === "manual") return "bg-emerald-500";
+  return "bg-slate-400";
 }
 
 function buildCalendarDays(cursor: Date): Array<{ date: Date }> {
