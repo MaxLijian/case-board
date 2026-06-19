@@ -183,15 +183,16 @@ pub async fn convert_doc_to_docx(src_path: String) -> Result<String, String> {
         let mut ok = false;
         let mut last_err = String::new();
         for bin in candidates {
-            match std::process::Command::new(bin)
-                .arg("--headless")
+            let mut cmd = std::process::Command::new(bin);
+            cmd.arg("--headless")
                 .arg("--convert-to")
                 .arg("docx")
                 .arg("--outdir")
                 .arg(&out_dir)
-                .arg(&src_path)
-                .output()
-            {
+                .arg(&src_path);
+            // Windows 下隐藏 LibreOffice 控制台窗口,避免转换时闪黑框。
+            crate::proc_util::hide_console_window_std(&mut cmd);
+            match cmd.output() {
                 Ok(o) if o.status.success() => {
                     ok = true;
                     break;

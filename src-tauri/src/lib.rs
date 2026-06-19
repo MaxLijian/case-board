@@ -17,6 +17,7 @@ pub mod ingest;
 pub mod lifecycle;
 pub mod llm;
 pub mod local_kb;
+pub mod proc_util;
 // 私人专属功能 Rust 侧(双轨发布模型)。开源仓此文件为桩(命令返回 Err),照样编译。
 pub mod case_bundle;
 pub mod private;
@@ -116,6 +117,22 @@ fn reveal_in_finder(path: String) -> Result<(), String> {
     }
     tauri_plugin_opener::reveal_item_in_dir(&path)
         .map_err(|e| format!("无法在文件管理器中显示: {}", e))
+}
+
+/// 把案件源文件夹加进 asset 协议 scope(运行期、按案件 `allow_directory`),
+/// 让源文件查看器能用流式 `asset://` 协议在 iframe 里原生渲染该案 PDF(大扫描件不占内存、自带 Range)。
+/// 比 `fs:scope` 的 `$HOME/**` 更窄(守「别用 `**`」铁律);scope 在会话内累加、不撤销(都是用户自己的文件夹)。
+/// 前端打开案件源文件查看器**前必须 await 本命令**,否则 iframe 首次请求会 403(scope 未就绪)。
+#[tauri::command]
+fn allow_case_assets(app: tauri::AppHandle, folder: String) -> Result<(), String> {
+    use tauri::Manager;
+    let p = Path::new(&folder);
+    if !p.is_dir() {
+        return Err(format!("案件文件夹不存在: {}", folder));
+    }
+    app.asset_protocol_scope()
+        .allow_directory(&folder, true)
+        .map_err(|e| format!("无法授权访问案件文件: {}", e))
 }
 
 #[tauri::command]
@@ -699,6 +716,143 @@ async fn update_todo(
 #[tauri::command]
 async fn delete_todo(pool: tauri::State<'_, SqlitePool>, id: String) -> Result<u64, String> {
     db::todos::delete(pool.inner(), &id).await.map_err(db_err)
+}
+
+/* ---- 源文件看板 Phase 3:文档标记(重要/忽略 + 原告/被告/第三人) ---- */
+
+/// 列出某案件全部文档的标记(前端按 document_id 聚合成「重要/忽略 + 原被告」)。
+#[tauri::command]
+async fn list_document_tags(
+    pool: tauri::State<'_, SqlitePool>,
+    case_id: String,
+) -> Result<Vec<db::document_tags::DocumentTag>, String> {
+    db::document_tags::list_by_case(pool.inner(), &case_id)
+        .await
+        .map_err(db_err)
+}
+
+/// 设置文档重要度(单值):value=Some("重要"|"忽略") 或 None(清空回普通)。
+/// document_ids 多个 = 文件夹级整批标记。
+#[tauri::command]
+async fn set_document_importance(
+    pool: tauri::State<'_, SqlitePool>,
+    document_ids: Vec<String>,
+    value: Option<String>,
+) -> Result<(), String> {
+    db::document_tags::set_importance_batch(pool.inner(), &document_ids, value.as_deref()).await
+}
+
+/// 切换文档当事人侧(可多值):value=原告|被告|第三人,enabled=加/删。多个 document_ids = 整批。
+#[tauri::command]
+async fn set_document_party_side(
+    pool: tauri::State<'_, SqlitePool>,
+    document_ids: Vec<String>,
+    value: String,
+    enabled: bool,
+) -> Result<(), String> {
+    db::document_tags::set_party_side_batch(pool.inner(), &document_ids, &value, enabled).await
+}
+
+/// 人工设文档分类(单值,六选一;value=None 清空)。
+#[tauri::command]
+async fn set_document_category(
+    pool: tauri::State<'_, SqlitePool>,
+    document_id: String,
+    value: Option<String>,
+) -> Result<(), String> {
+    db::document_tags::set_category(pool.inner(), &document_id, value.as_deref()).await
+}
+
+/// 🪄 AI 自动整理:一次 LLM 调用对整案材料判 重要度 + 归类,写成 `ai_suggest` 标记
+/// (**不覆盖人工标记**)。返回成功写入建议的材料数。
+///
+/// **完成/失败都 emit 事件**(`organize_done` / `organize_failed`,带 case_id):后端命令
+/// 在前端切页后仍跑完、DB 照写;前端靠事件刷新当前打开的案件,不再因 CaseView 卸载重挂而
+/// 丢掉"完成→刷新"(老板反馈:切走再回来 spinner 没了、弹成功但界面不变)。
+#[tauri::command]
+async fn ai_organize_case(
+    app: tauri::AppHandle,
+    pool: tauri::State<'_, SqlitePool>,
+    case_id: String,
+) -> Result<usize, String> {
+    let result = ai_organize_inner(pool.inner(), &case_id).await;
+    match &result {
+        Ok(n) => {
+            let _ = app.emit(
+                "organize_done",
+                serde_json::json!({ "case_id": case_id, "count": n }),
+            );
+        }
+        Err(e) => {
+            let _ = app.emit(
+                "organize_failed",
+                serde_json::json!({ "case_id": case_id, "error": e }),
+            );
+        }
+    }
+    result
+}
+
+async fn ai_organize_inner(pool: &SqlitePool, case_id: &str) -> Result<usize, String> {
+    let settings = settings::read_settings().map_err(|e| e.to_string())?;
+    let config = llm::LlmConfig::from_settings(&settings);
+    let docs = documents_db::list_documents_by_case(pool, case_id)
+        .await
+        .map_err(db_err)?;
+    // 只整理:非 AI 产物 + 未软删
+    let active: Vec<Document> = docs
+        .into_iter()
+        .filter(|d| !d.is_ai_artifact && d.deleted_at.is_none())
+        .collect();
+    if active.is_empty() {
+        return Ok(0);
+    }
+    let inputs: Vec<llm::organize::OrganizeDocInput> = active
+        .iter()
+        .map(|d| {
+            let snippet = d
+                .extracted_text_path
+                .as_deref()
+                .and_then(|p| std::fs::read_to_string(p).ok())
+                .map(|t| llm::organize::snippet_of(&t))
+                .unwrap_or_default();
+            llm::organize::OrganizeDocInput {
+                id: d.id.clone(),
+                filename: d.filename.clone(),
+                snippet,
+            }
+        })
+        .collect();
+    let results = llm::organize::classify_documents(&config, &inputs)
+        .await
+        .map_err(|e| format!("AI 整理失败:{e}"))?;
+    let valid_ids: std::collections::HashSet<&str> = active.iter().map(|d| d.id.as_str()).collect();
+    let mut n = 0usize;
+    for r in &results {
+        if !valid_ids.contains(r.id.as_str()) {
+            continue; // AI 回了不存在的 id,跳过
+        }
+        // importance:重要/忽略 才写;"普通" = 不打标(也不动人工标记)
+        if r.importance == "重要" || r.importance == "忽略" {
+            let _ = db::document_tags::set_ai_suggestion(
+                pool,
+                &r.id,
+                db::document_tags::NS_IMPORTANCE,
+                &r.importance,
+            )
+            .await;
+        }
+        // category:六选一(非法值 set_ai_suggestion 内部会报错 → 忽略该项)
+        let _ = db::document_tags::set_ai_suggestion(
+            pool,
+            &r.id,
+            db::document_tags::NS_CATEGORY,
+            &r.category,
+        )
+        .await;
+        n += 1;
+    }
+    Ok(n)
 }
 
 // ===== 独立日历日程(2026-06-14;不绑案件,首页日历右键添加 / 删除) =====
@@ -2735,13 +2889,17 @@ async fn start_court_filing(
         let cli_parent = std::path::Path::new(&cli_path_clone)
             .parent()
             .unwrap_or(std::path::Path::new(&cli_path_clone));
-        let spawn_result = Command::new(&python)
+        let mut filing_cmd = Command::new(&python);
+        filing_cmd
             .current_dir(cli_parent)
             .args(&args)
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
-            .kill_on_drop(true)
-            .spawn();
+            .kill_on_drop(true);
+        // Windows 下隐藏 python 控制台窗口(否则发起立案时会闪黑框;Playwright 的浏览器
+        // 是独立 GUI 子进程,不受影响,仍正常可见)。
+        crate::proc_util::hide_console_window(&mut filing_cmd);
+        let spawn_result = filing_cmd.spawn();
 
         let mut child = match spawn_result {
             Ok(c) => c,
@@ -5084,6 +5242,7 @@ pub fn run() {
             get_case_with_docs,
             delete_case,
             read_text_file,
+            allow_case_assets,
             extract_doc_text,
             extract_fields_from_text,
             open_in_default_app,
@@ -5108,6 +5267,11 @@ pub fn run() {
             list_open_todos,
             update_todo,
             delete_todo,
+            list_document_tags,
+            set_document_importance,
+            set_document_party_side,
+            set_document_category,
+            ai_organize_case,
             add_calendar_event,
             list_calendar_events,
             delete_calendar_event,

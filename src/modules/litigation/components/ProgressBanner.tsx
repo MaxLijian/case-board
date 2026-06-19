@@ -62,7 +62,9 @@ export function ProgressBanner({
     case "doc_started":
       // 2026-05-24 i:并发场景下 index 不能算 percent(回退 bug),DocStarted 没 completed_count,
       // 这里不更新 percent(沿用上一个 DocFinished 的 percent),只更新 filename / providers
-      label = `处理中 · ${progress.filename}`;
+      // 2026-06-19:doc_started 也带 index/total,显示「第 i/N 份」整体进度 —— 否则首个大文件
+      // OCR 1~3 分钟时只看到「处理中 · 文件名 0%」,以为卡死/不知道总共多少份(反馈)。
+      label = `处理中 · 第 ${progress.index}/${progress.total} 份`;
       filename = progress.filename;
       ocrProvider = progress.ocr_provider;
       llmProvider = progress.llm_provider;

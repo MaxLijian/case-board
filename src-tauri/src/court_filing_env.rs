@@ -21,6 +21,8 @@ use tauri::{AppHandle, Emitter};
 use tokio::io::AsyncBufReadExt;
 use tokio::process::Command;
 
+use crate::proc_util::hide_console_window;
+
 /// venv 目录名(落在 app_data 下)。
 const VENV_DIR: &str = "court_filing_venv";
 /// pip 主镜像(清华 TUNA,全量 PyPI 镜像,稳定;2026-06-18 实测可达、装 playwright 1.60 正常)。
@@ -153,6 +155,7 @@ async fn run_streamed(
     for (k, v) in envs {
         cmd.env(k, v);
     }
+    hide_console_window(&mut cmd);
 
     let mut child = cmd
         .spawn()
@@ -265,6 +268,7 @@ async fn find_base_python(configured: Option<&str>) -> Option<(String, Vec<Strin
             .env("PYTHONUTF8", "1")
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
+        hide_console_window(&mut cmd);
         if let Ok(out) = cmd.output().await {
             if out.status.success() {
                 let s = String::from_utf8_lossy(&out.stdout);
@@ -284,15 +288,15 @@ async fn find_base_python(configured: Option<&str>) -> Option<(String, Vec<Strin
 
 /// 跑环境体检,返回结构化报告(不依赖前端)。
 pub async fn run_check(python: &str, cli_parent: &Path) -> EnvReport {
-    let output = Command::new(python)
-        .current_dir(cli_parent)
+    let mut cmd = Command::new(python);
+    cmd.current_dir(cli_parent)
         .args(["-m", "court_filing_cli.env_check", "--json"])
         .env("PYTHONUTF8", "1")
         .env("PYTHONIOENCODING", "utf-8")
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .output()
-        .await;
+        .stderr(Stdio::piped());
+    hide_console_window(&mut cmd);
+    let output = cmd.output().await;
 
     let out = match output {
         Ok(o) => o,

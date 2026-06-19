@@ -119,6 +119,52 @@ export function revealInFinder(path: string): Promise<void> {
   return invoke<void>("reveal_in_finder", { path });
 }
 
+/* ---- 源文件看板 Phase 3:文档标记 ---- */
+
+/** 列出某案件全部文档的标记(重要/忽略 + 原告/被告/第三人)。 */
+export function listDocumentTags(caseId: string): Promise<import("./types").DocumentTag[]> {
+  return invoke("list_document_tags", { caseId });
+}
+
+/** 设文档重要度(单值):value="重要"|"忽略" 或 null(清空)。documentIds 多个=整批。 */
+export function setDocumentImportance(
+  documentIds: string[],
+  value: string | null,
+): Promise<void> {
+  return invoke("set_document_importance", { documentIds, value });
+}
+
+/** 切换文档当事人侧(可多值):value=原告|被告|第三人,enabled=加/删。documentIds 多个=整批。 */
+export function setDocumentPartySide(
+  documentIds: string[],
+  value: string,
+  enabled: boolean,
+): Promise<void> {
+  return invoke("set_document_party_side", { documentIds, value, enabled });
+}
+
+/** 人工设文档分类(单值,六选一;value=null 清空)。 */
+export function setDocumentCategory(
+  documentId: string,
+  value: string | null,
+): Promise<void> {
+  return invoke("set_document_category", { documentId, value });
+}
+
+/** 🪄 AI 自动整理:一次 LLM 调用判整案材料的 重要度+归类,写 ai_suggest。返回写入数。 */
+export function aiOrganizeCase(caseId: string): Promise<number> {
+  return invoke("ai_organize_case", { caseId });
+}
+
+/**
+ * 2026-06-19:把案件源文件夹加进 asset 协议 scope(运行期、按案件授权),
+ * 让源文件查看器能用流式 `asset://` 协议在 iframe 里原生渲染该案 PDF。
+ * **打开查看器前必须 await 本调用**,否则 iframe 首次请求会 403(scope 未就绪)。
+ */
+export function allowCaseAssets(folder: string): Promise<void> {
+  return invoke<void>("allow_case_assets", { folder });
+}
+
 /* ------------------------------------------------------------------ */
 /* 用户设置                                                            */
 /* ------------------------------------------------------------------ */

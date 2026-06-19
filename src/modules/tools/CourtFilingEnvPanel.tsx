@@ -47,12 +47,22 @@ export function CourtFilingEnvPanel({ onReady }: { onReady?: () => void }) {
   const [steps, setSteps] = useState<Record<string, StepState>>({});
   const installingRef = useRef(false);
 
+  // onReady 走 ref:父组件传的是内联箭头函数,且其内部会 setState 触发父组件重渲染、
+  // 生成新的 onReady。若把 onReady 放进 runCheck 的依赖,就会形成
+  // 「检测 ok → onReady → 父重渲染 → runCheck 身份变 → useEffect 重触发 → 再检测」
+  // 的死循环(只在环境就绪 r.ok=true 时发作:表现为不停检测 / 面板狂闪)。
+  // 用 ref 把 onReady 与 runCheck 解耦,runCheck 身份恒定,自动检测只跑一次。
+  const onReadyRef = useRef(onReady);
+  useEffect(() => {
+    onReadyRef.current = onReady;
+  }, [onReady]);
+
   const runCheck = useCallback(async () => {
     setChecking(true);
     try {
       const r = await courtFilingEnvCheck();
       setReport(r);
-      if (r.ok) onReady?.();
+      if (r.ok) onReadyRef.current?.();
     } catch (e) {
       setReport({
         ok: false,
@@ -64,7 +74,7 @@ export function CourtFilingEnvPanel({ onReady }: { onReady?: () => void }) {
     } finally {
       setChecking(false);
     }
-  }, [onReady]);
+  }, []);
 
   // 进面板自动检测一次
   useEffect(() => {
@@ -103,7 +113,7 @@ export function CourtFilingEnvPanel({ onReady }: { onReady?: () => void }) {
       setReport(r);
       if (r.ok) {
         toast("在线立案环境已就绪 ✅", "info");
-        onReady?.();
+        onReadyRef.current?.();
       } else if (r.missing.length > 0) {
         toast(`仍缺少:${r.missing.join("、")}`, "error");
       }

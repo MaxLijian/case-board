@@ -72,6 +72,8 @@ fn apply_lark_env(cmd: &mut Command) {
         "PATH",
         "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin",
     );
+    // Windows 下隐藏 lark-cli 控制台窗口,否则每次取飞书日历都闪一个黑色命令框。
+    crate::proc_util::hide_console_window(cmd);
 }
 
 /// 调一次 lark-cli 的 `api` 子命令(复用用户登录态),返回解析后的 JSON。

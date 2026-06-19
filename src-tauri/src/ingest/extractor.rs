@@ -58,9 +58,10 @@ fn pdf_text_usable(text: &str) -> bool {
 fn pdftotext_available() -> bool {
     static AVAILABLE: OnceLock<bool> = OnceLock::new();
     *AVAILABLE.get_or_init(|| {
-        std::process::Command::new("pdftotext")
-            .arg("-v")
-            .output()
+        let mut cmd = std::process::Command::new("pdftotext");
+        cmd.arg("-v");
+        crate::proc_util::hide_console_window_std(&mut cmd);
+        cmd.output()
             .map(|o| o.status.success() || o.status.code() == Some(99)) // pdftotext -v 退出码 99 也算正常
             .unwrap_or(false)
     })
@@ -352,20 +353,20 @@ fn textutil_extract(path: &Path) -> Result<String, String> {
 ///
 /// 注意:`pdftotext` 必须在 PATH 里。打包 DMG 时要把 poppler 静态链或者提示用户 `brew install poppler`。
 fn extract_pdf_with_pdftotext(path: &Path) -> Result<String, String> {
-    let output = std::process::Command::new("pdftotext")
-        .arg("-layout")
+    let mut cmd = std::process::Command::new("pdftotext");
+    cmd.arg("-layout")
         .arg("-enc")
         .arg("UTF-8")
         .arg(path)
-        .arg("-") // stdout
-        .output()
-        .map_err(|e| {
-            if e.kind() == std::io::ErrorKind::NotFound {
-                "pdftotext 未安装(brew install poppler)".into()
-            } else {
-                format!("调 pdftotext 失败: {}", e)
-            }
-        })?;
+        .arg("-"); // stdout
+    crate::proc_util::hide_console_window_std(&mut cmd);
+    let output = cmd.output().map_err(|e| {
+        if e.kind() == std::io::ErrorKind::NotFound {
+            "pdftotext 未安装(brew install poppler)".into()
+        } else {
+            format!("调 pdftotext 失败: {}", e)
+        }
+    })?;
     if !output.status.success() {
         return Err(format!(
             "pdftotext 转换失败: {}",

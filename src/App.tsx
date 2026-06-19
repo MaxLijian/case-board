@@ -4,6 +4,7 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { getVersion } from "@tauri-apps/api/app";
 
 import { MarkdownModal } from "@/components/MarkdownModal";
+import { SourceDocumentViewerDrawer } from "@/components/SourceDocumentViewerDrawer";
 import { SettingsModal, type SettingsTab } from "@/components/SettingsModal";
 import { OnboardingWizard } from "@/components/OnboardingWizard";
 import { DeepSeekBalanceChip } from "@/components/DeepSeekBalanceChip";
@@ -70,6 +71,8 @@ function App() {
   const [splitPlan, setSplitPlan] = useState<ImportPlan | null>(null);
   /** 当前打开的文档预览(点击 AI 产物或可读文档时弹) */
   const [previewDoc, setPreviewDoc] = useState<Document | null>(null);
+  /** 源文件看板 Phase 1:当前在板内查看器抽屉打开的源文件(MD/原件双视图) */
+  const [viewerDoc, setViewerDoc] = useState<Document | null>(null);
   /**
    * V0.3 D1+D2 · 写作模式:当前在 Milkdown 编辑器里打开的文书(null = 看板模式)。
    * 仅 chat_artifact 文书(is_ai_artifact + category∈文书类型)可进编辑器。切案件重置。
@@ -616,6 +619,13 @@ function App() {
    * 错误时不在主页面打断,console.warn 即可(下次可以加 toast)。
    */
   const handleOpenDoc = useCallback((doc: Document) => {
+    // 源文件看板 Phase 1(2026-06-19):真实导入的源文件(非 AI 产物)→ 板内查看器抽屉
+    // (「处理后 MD / 原件」双 tab,板内看 PDF/图片、MD 失真时切原件核对)。
+    // AI 产物 / 报告 / chat 文书仍走 MarkdownModal —— 它们 MD-native,「原件」tab 无意义。
+    if (!doc.is_ai_artifact) {
+      setViewerDoc(doc);
+      return;
+    }
     // 2026-05-31 · 抽取成功的文件(PDF/扫描件/docx 等)点击优先看「处理后的文本(MD)」
     // —— 这正是 AI 实际读到的内容,也方便核对抽取质量;原件仍可用行尾「在 Finder 打开」。
     // 见下方 MarkdownModal 的 previewExtractedPath 逻辑。
@@ -1107,6 +1117,14 @@ function App() {
       </div>
 
       {/* 全局弹窗 / 浮层 — 跨模块共享 */}
+      {/* 源文件看板 Phase 1:源文件查看器抽屉(MD/原件双视图) */}
+      {viewerDoc && selectedCase && (
+        <SourceDocumentViewerDrawer
+          doc={viewerDoc}
+          caseFolder={selectedCase.source_folder}
+          onClose={() => setViewerDoc(null)}
+        />
+      )}
       {previewDoc &&
         (() => {
           // 2026-05-31 · 抽取成功的非文本原件(PDF/扫描件/docx)→ 预览「处理后文本」(extracted_text_path),

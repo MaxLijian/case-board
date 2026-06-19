@@ -262,12 +262,30 @@ export interface CaseCandidate {
   has_stage_subdirs: boolean;
   /** 拆分弹窗里默认是否勾选。命中非案件资料词表(证件/宣传/模板…)→ false(默认不选,仍可手动勾上) */
   default_selected: boolean;
+  /** 目录内文档清单(相对路径,封顶 100),给"展开看文件"用。条数 < doc_count 即被截断。 */
+  files: string[];
+}
+
+/** 文档标记(源文件看板 Phase 3)。对应 Rust `db::document_tags::DocumentTag`。 */
+export interface DocumentTag {
+  id: string;
+  document_id: string;
+  /** 'importance' | 'party_side' */
+  namespace: string;
+  /** importance: 重要|忽略 ; party_side: 原告|被告|第三人 */
+  value: string;
+  /** 'user' | 'ai_suggest' */
+  source: string;
+  created_at: string;
+  updated_at: string;
 }
 
 /** 被忽略的目录。对应 Rust `case_split::IgnoredDir`。 */
 export interface IgnoredDir {
   path: string;
   reason: string;
+  /** 目录内文档清单。空目录为空;"杂项/补充目录"有内容 → 可展开 + 勾回作为案件导入。 */
+  files: string[];
 }
 
 /** 拆分预案。对应 Rust `case_split::ImportPlan`,plan_import_folder 命令的返回。 */

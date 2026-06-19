@@ -17,7 +17,10 @@ import { useState, useEffect, useCallback } from "react";
 const PREFIX = "caseboard:feature:";
 const CHANGE_EVENT = "caseboard:feature-change";
 
-export type FeatureFlagName = "home_filter_bar" | "home_ticktick";
+export type FeatureFlagName =
+  | "home_filter_bar"
+  | "home_ticktick"
+  | "case_court_filing";
 
 export interface FeatureFlagMeta {
   name: FeatureFlagName;
@@ -45,6 +48,14 @@ export const FEATURE_FLAGS: FeatureFlagMeta[] = [
     name: "home_ticktick",
     title: "首页滴答清单待办",
     description: "在首页显示滴答清单同步的待办汇总。关闭则首页不显示待办块。",
+    defaultValue: false,
+    location: "feature",
+  },
+  {
+    name: "case_court_filing",
+    title: "案件详情显示「辅助在线立案」",
+    description:
+      "在案件详情页底部显示「辅助在线立案」区(实验性,依赖本机 Python 运行时)。默认关闭,保持详情页清爽;需要时在此打开。",
     defaultValue: false,
     location: "feature",
   },

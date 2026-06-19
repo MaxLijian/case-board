@@ -13,6 +13,7 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 pub mod global_extract;
+pub mod organize;
 pub mod prompts;
 pub mod providers;
 

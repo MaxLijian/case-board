@@ -13,10 +13,13 @@ import { Loader2, Save, AlertTriangle, Gavel } from "lucide-react";
 import { getSettings, saveSettings } from "@/lib/api";
 import type { Settings } from "@/lib/types";
 import { toast } from "@/components/ui/toast";
+import { useFeatureFlag } from "@/lib/featureFlags";
 import { LawyerProfilesCard } from "@/components/LawyerProfilesCard";
 import { CourtFilingEnvPanel } from "./CourtFilingEnvPanel";
 
 export function CourtFilingTool() {
+  // 案件详情页是否显示「辅助在线立案」区(默认关,在这里开)
+  const [showInCase, setShowInCase] = useFeatureFlag("case_court_filing");
   const [settings, setSettings] = useState<Settings | null>(null);
   const [cliPath, setCliPath] = useState("");
   const [python, setPython] = useState("");
@@ -88,6 +91,25 @@ export function CourtFilingTool() {
           </div>
         </div>
       </div>
+
+      {/* 开关:是否在案件详情页底部显示「辅助在线立案」区(默认关) */}
+      <label className="flex cursor-pointer items-start gap-3 rounded-lg border border-border bg-card px-4 py-3">
+        <input
+          type="checkbox"
+          checked={showInCase}
+          onChange={(e) => setShowInCase(e.target.checked)}
+          className="mt-0.5 size-4 accent-sky-500"
+        />
+        <div className="min-w-0">
+          <p className="text-sm font-medium text-foreground">
+            在案件详情页显示「辅助在线立案」
+          </p>
+          <p className="mt-0.5 text-[13px] text-muted-foreground">
+            默认关闭,保持案件详情页清爽。打开后,每个案件详情页底部会出现「辅助在线立案」区,
+            可带着案件上下文一键发起立案。
+          </p>
+        </div>
+      </label>
 
       {/* 运行环境:体检 + 一键安装(Python 运行时不打包,需本机自备,这里帮你一键装好) */}
       <div className="rounded-lg bg-sky-50 px-4 py-3">

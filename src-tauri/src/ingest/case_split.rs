@@ -74,6 +74,9 @@ const DOC_EXTS: &[&str] = &[
 /// 递归深度上限(年份 → 案件 → 阶段 ≈ 3,留一层余量)。
 const MAX_DEPTH: usize = 4;
 
+/// 拆分弹窗"展开看文件"清单的上限(防超大目录把 payload 刷爆;超出只给计数)。
+const FILE_LIST_CAP: usize = 100;
+
 /// 一个候选案件(对应一个子目录)。
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 pub struct CaseCandidate {
@@ -88,6 +91,9 @@ pub struct CaseCandidate {
     /// 拆分弹窗里**默认是否勾选**。命中非案件资料词表(`EXCLUDE_HINTS`)→ `false`(默认不选,
     /// 但仍展示可手动勾上)。纯展示/默认值,**不参与** `multi`/`strong` 判定 —— 否则会把弹窗整个吞掉。
     pub default_selected: bool,
+    /// 目录内文档清单(相对该目录的路径,封顶 `FILE_LIST_CAP`),给拆分弹窗"展开看文件"用。
+    /// 与 `doc_count` 同口径(只收文档型),`doc_count > files.len()` 即被上限截断。
+    pub files: Vec<String>,
 }
 
 /// 一个被忽略的目录及原因。
@@ -95,6 +101,9 @@ pub struct CaseCandidate {
 pub struct IgnoredDir {
     pub path: String,
     pub reason: String,
+    /// 目录内文档清单(同 `CaseCandidate.files` 口径)。空目录为空;
+    /// "杂项/补充目录"有内容 → 前端可展开查看 + 手动勾回作为案件导入。
+    pub files: Vec<String>,
 }
 
 /// 拆分预案(只读检测产物,交前端确认弹窗用)。
@@ -211,6 +220,46 @@ fn doc_count_recursive(dir: &Path, depth: usize) -> usize {
     n
 }
 
+/// 递归收集目录内的文档型文件(相对 `base` 的路径),封顶 `FILE_LIST_CAP`。
+/// 与 `doc_count_recursive` 同口径(同样的隐藏/系统目录跳过 + `is_doc_file`),
+/// 用于拆分弹窗"展开看文件";达到上限即停(前端用 `doc_count` 显示真实总数)。
+fn collect_doc_files(dir: &Path, base: &Path, depth: usize, out: &mut Vec<String>) {
+    if depth > MAX_DEPTH || out.len() >= FILE_LIST_CAP {
+        return;
+    }
+    let Ok(rd) = std::fs::read_dir(dir) else {
+        return;
+    };
+    // 排序,保证清单稳定(read_dir 顺序不保证)
+    let mut entries: Vec<PathBuf> = rd.flatten().map(|e| e.path()).collect();
+    entries.sort();
+    for p in entries {
+        if out.len() >= FILE_LIST_CAP {
+            return;
+        }
+        let name = dir_name(&p);
+        if name.starts_with('.') {
+            continue;
+        }
+        if p.is_dir() {
+            if IGNORED_DIRS.contains(&name.as_str()) {
+                continue;
+            }
+            collect_doc_files(&p, base, depth + 1, out);
+        } else if is_doc_file(&p) {
+            let rel = p.strip_prefix(base).unwrap_or(&p);
+            out.push(rel.to_string_lossy().to_string());
+        }
+    }
+}
+
+/// 目录的文档清单(相对该目录自身),封顶 `FILE_LIST_CAP`。
+fn doc_files(dir: &Path) -> Vec<String> {
+    let mut out = Vec::new();
+    collect_doc_files(dir, dir, 0, &mut out);
+    out
+}
+
 /// 该目录是否有阶段子目录(强信号:组织过的案件)。
 fn has_stage_subdirs(dir: &Path) -> bool {
     list_subdirs(dir).iter().any(|s| is_stage_dir(&dir_name(s)))
@@ -224,6 +273,7 @@ fn make_candidate(dir: &Path) -> CaseCandidate {
         doc_count: doc_count_recursive(dir, 0),
         has_stage_subdirs: has_stage_subdirs(dir),
         default_selected: !is_exclude_dir(&raw),
+        files: doc_files(dir),
     }
 }
 
@@ -297,6 +347,8 @@ pub fn plan_folder(root: &Path) -> ImportPlan {
             ignored.push(IgnoredDir {
                 path: s.to_string_lossy().to_string(),
                 reason: "杂项/补充目录".to_string(),
+                // 杂项目录有内容 → 前端可展开查看 + 勾回作为案件导入
+                files: doc_files(s),
             });
         } else if is_stage_dir(&n) {
             // 顶层就是阶段目录 → root 本身是单个案件,不参与拆分
@@ -306,6 +358,8 @@ pub fn plan_folder(root: &Path) -> ImportPlan {
             ignored.push(IgnoredDir {
                 path: s.to_string_lossy().to_string(),
                 reason: "空目录(无文档)".to_string(),
+                // 空目录无文档 → 清单为空,前端不展开/不可勾
+                files: Vec::new(),
             });
         }
     }
@@ -357,6 +411,7 @@ fn single_case_plan(root: &Path, root_str: &str) -> ImportPlan {
             has_stage_subdirs: has_stage_subdirs(root),
             // 保底单案(multi=false,不弹拆分弹窗)→ 默认勾选无意义,置 true 以示「就这一个」。
             default_selected: true,
+            files: doc_files(root),
         }],
         shared_dirs: Vec::new(),
         ignored: Vec::new(),
